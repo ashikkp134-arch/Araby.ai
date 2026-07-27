@@ -1,0 +1,50 @@
+# Environment
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.log
+npm-debug.log*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Generated
+*.pyc
+.cache/
+coverage/
+
+# Evaluation artifacts (local)
+backend/app/ai/evaluators/datasets/local/
+backend/app/ai/evaluators/results/
+
+# Local tooling (optional user-space binaries)
+.tools/
