@@ -87,7 +87,13 @@ export interface ChatMessage {
   model?: string | null;
   latency_ms?: number | null;
   file_changes: FileChangeProposal[];
+  undone?: boolean;
   created_at: string;
+}
+
+export interface UndoChangesResult {
+  message_id: string;
+  restored_paths: string[];
 }
 
 export interface ChatCompletion {

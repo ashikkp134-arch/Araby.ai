@@ -113,7 +113,7 @@ class RequestRouter:
                 tier=ModelTier.CODING,
                 model=coding_model,
                 temperature=0.3,
-                max_tokens=8192,
+                max_tokens=16384,
                 reason="website generation / edit",
             )
 

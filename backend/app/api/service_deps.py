@@ -122,6 +122,7 @@ def get_chat_service(
     chat_repo: ChatRepository = Depends(get_chat_repository),
     project_service: ProjectService = Depends(get_project_service),
     ai_pipeline: AIPipeline = Depends(get_ai_pipeline),
+    file_service: FileService = Depends(get_file_service),
 ) -> ChatService:
     """Provide ChatService.
 
@@ -129,11 +130,12 @@ def get_chat_service(
         chat_repo: Chat repository.
         project_service: Project service.
         ai_pipeline: AI pipeline.
+        file_service: File service used for undo operations.
 
     Returns:
         ChatService instance.
     """
-    return ChatService(chat_repo, project_service, ai_pipeline)
+    return ChatService(chat_repo, project_service, ai_pipeline, file_service)
 
 
 def get_workspace_service() -> WorkspaceService:

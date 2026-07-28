@@ -6,7 +6,12 @@ from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_current_user
 from app.api.service_deps import get_chat_service
-from app.schemas.chat import ChatCompletionResponse, ChatMessageRequest, ChatMessageResponse
+from app.schemas.chat import (
+    ChatCompletionResponse,
+    ChatMessageRequest,
+    ChatMessageResponse,
+    UndoChangesResponse,
+)
 from app.schemas.common import APIResponse, PaginatedData
 from app.services.chat_service import ChatService
 
@@ -56,4 +61,24 @@ async def send_message(
         Chat completion response.
     """
     data = await chat_service.send_message(current_user["id"], project_id, payload)
+    return APIResponse(success=True, message="OK", data=data)
+
+
+@router.post("/{project_id}/undo-last", response_model=APIResponse[UndoChangesResponse])
+async def undo_last_changes(
+    project_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    chat_service: ChatService = Depends(get_chat_service),
+) -> APIResponse[UndoChangesResponse]:
+    """Revert every file change from the most recent AI change set.
+
+    Args:
+        project_id: Project identifier.
+        current_user: Authenticated user.
+        chat_service: Chat service.
+
+    Returns:
+        Summary of restored/removed file paths.
+    """
+    data = await chat_service.undo_last_changes(current_user["id"], project_id)
     return APIResponse(success=True, message="OK", data=data)

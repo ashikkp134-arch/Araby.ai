@@ -1,5 +1,12 @@
 import { apiClient, getAccessToken } from '@/api/client';
-import type { ApiResponse, ChatCompletion, ChatMessage, FileChangeProposal, PaginatedData } from '@/types';
+import type {
+  ApiResponse,
+  ChatCompletion,
+  ChatMessage,
+  FileChangeProposal,
+  PaginatedData,
+  UndoChangesResult,
+} from '@/types';
 
 /**
  * List chat messages for a project.
@@ -41,6 +48,19 @@ export async function sendChatMessage(
   const { data } = await apiClient.post<ApiResponse<ChatCompletion>>(
     `/chat/${projectId}/messages`,
     payload,
+  );
+  return data.data;
+}
+
+/**
+ * Revert every file change from the most recent AI change set.
+ *
+ * @param projectId - Project identifier.
+ * @returns Summary of restored/removed file paths.
+ */
+export async function undoLastAiChanges(projectId: string): Promise<UndoChangesResult> {
+  const { data } = await apiClient.post<ApiResponse<UndoChangesResult>>(
+    `/chat/${projectId}/undo-last`,
   );
   return data.data;
 }
@@ -94,12 +114,13 @@ export function streamChatMessage(
   const wsUrl = `${protocol}://${window.location.host}/ws/chat/${projectId}`;
   const socket = new WebSocket(wsUrl);
   let settled = false;
-  let rejectDone: ((reason?: unknown) => void) | null = null;
   let resolveDone: (() => void) | null = null;
 
-  const done = new Promise<void>((resolve, reject) => {
+  // Stream errors are surfaced via handlers.onError and resolve `done`
+  // (rather than reject it) so a failed AI turn doesn't produce an
+  // unhandled promise rejection on top of the user-visible error banner.
+  const done = new Promise<void>((resolve) => {
     resolveDone = resolve;
-    rejectDone = reject;
   });
 
   const finishOk = () => {
@@ -116,7 +137,9 @@ export function streamChatMessage(
     }
     settled = true;
     handlers.onError?.(message);
-    rejectDone?.(new Error(message));
+    // Resolve (don't reject) so the UI can show a friendly banner without an
+    // unhandled promise rejection / secondary catch overwriting the message.
+    resolveDone?.();
   };
 
   socket.addEventListener('open', () => {

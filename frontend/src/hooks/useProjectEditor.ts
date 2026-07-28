@@ -10,10 +10,24 @@ import {
   getFileTree,
   updateFile,
 } from '@/api/files';
-import { listChatMessages, streamChatMessage, type StreamChatHandle } from '@/api/chat';
+import {
+  listChatMessages,
+  streamChatMessage,
+  undoLastAiChanges,
+  type StreamChatHandle,
+} from '@/api/chat';
 import { useEditorStore } from '@/stores/editorStore';
 import type { ChatMessage, FileNode, ProjectFile } from '@/types';
+import { downloadProjectZip } from '@/utils/downloadProjectZip';
 import { getErrorMessage } from '@/utils/helpers';
+
+type ActiveView = 'editor' | 'preview';
+
+interface PreviewTabState {
+  open: boolean;
+  files: ProjectFile[];
+  loading: boolean;
+}
 
 /**
  * Encapsulate editor page data loading and file/chat mutations.
@@ -35,10 +49,17 @@ export function useProjectEditor(projectId: string) {
   } = useEditorStore();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [flatFiles, setFlatFiles] = useState<ProjectFile[]>([]);
   const [chatPending, setChatPending] = useState(false);
+  const [undoPending, setUndoPending] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [optimisticMessages, setOptimisticMessages] = useState<ChatMessage[]>([]);
+  const [activeView, setActiveView] = useState<ActiveView>('editor');
+  const [previewTab, setPreviewTab] = useState<PreviewTabState>({
+    open: false,
+    files: [],
+    loading: false,
+  });
+  const [downloading, setDownloading] = useState(false);
   const streamHandleRef = useRef<StreamChatHandle | null>(null);
 
   const projectQuery = useQuery({
@@ -63,6 +84,8 @@ export function useProjectEditor(projectId: string) {
     reset();
     setOptimisticMessages([]);
     setStreamingContent('');
+    setActiveView('editor');
+    setPreviewTab({ open: false, files: [], loading: false });
     return () => {
       streamHandleRef.current?.cancel();
       reset();
@@ -82,10 +105,26 @@ export function useProjectEditor(projectId: string) {
     return [...server, ...optimisticMessages];
   }, [chatQuery.data?.items, optimisticMessages]);
 
-  const refreshPreviewFiles = useCallback(async () => {
-    if (projectQuery.data?.workspace_type !== 'website') {
-      return;
+  /**
+   * Most recent assistant message that applied file changes. Drives the
+   * "Applied Changes" counter and Undo Last AI Changes availability.
+   */
+  const lastChangeSet = useMemo(() => {
+    for (let i = chatMessages.length - 1; i >= 0; i -= 1) {
+      const message = chatMessages[i];
+      if (message.role === 'assistant' && message.file_changes?.length) {
+        return message;
+      }
     }
+    return null;
+  }, [chatMessages]);
+
+  const canUndo = Boolean(lastChangeSet && !lastChangeSet.undone && !chatPending && !undoPending);
+
+  /**
+   * Fetch every project file (used to snapshot a Live Preview render).
+   */
+  const fetchAllFiles = useCallback(async (): Promise<ProjectFile[]> => {
     const tree = await getFileTree(projectId);
     const files: ProjectFile[] = [];
 
@@ -101,12 +140,8 @@ export function useProjectEditor(projectId: string) {
     }
 
     await walk(tree);
-    setFlatFiles(files);
-  }, [projectId, projectQuery.data?.workspace_type]);
-
-  useEffect(() => {
-    void refreshPreviewFiles();
-  }, [refreshPreviewFiles, treeQuery.dataUpdatedAt]);
+    return files;
+  }, [projectId]);
 
   const saveActive = useCallback(async () => {
     if (!activeTab || !activeTab.dirty) {
@@ -117,13 +152,12 @@ export function useProjectEditor(projectId: string) {
     try {
       const saved = await updateFile(projectId, activeTab.id, { content: activeTab.content });
       markSaved(activeTab.id, saved.content);
-      await refreshPreviewFiles();
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
       setSaving(false);
     }
-  }, [activeTab, markSaved, projectId, refreshPreviewFiles]);
+  }, [activeTab, markSaved, projectId]);
 
   useEffect(() => {
     if (!activeTab?.dirty) {
@@ -136,7 +170,7 @@ export function useProjectEditor(projectId: string) {
   }, [activeTab?.content, activeTab?.dirty, activeTab?.id, saveActive]);
 
   /**
-   * Open a file node in a Monaco tab.
+   * Open a file node in a Monaco tab and switch back to the editor view.
    *
    * @param node - File tree node.
    */
@@ -152,9 +186,20 @@ export function useProjectEditor(projectId: string) {
         content: file.content,
         dirty: false,
       });
+      setActiveView('editor');
     } catch (err) {
       setError(getErrorMessage(err));
     }
+  }
+
+  /**
+   * Select an already-open file tab and switch back to the editor view.
+   *
+   * @param tabId - Editor tab identifier.
+   */
+  function handleSelectFileTab(tabId: string) {
+    setActiveTab(tabId);
+    setActiveView('editor');
   }
 
   /**
@@ -177,6 +222,7 @@ export function useProjectEditor(projectId: string) {
         content: file.content,
         dirty: false,
       });
+      setActiveView('editor');
     } catch (err) {
       setError(getErrorMessage(err));
     }
@@ -216,7 +262,6 @@ export function useProjectEditor(projectId: string) {
         await deleteFolder(projectId, node.path);
       }
       await queryClient.invalidateQueries({ queryKey: ['file-tree', projectId] });
-      await refreshPreviewFiles();
     } catch (err) {
       setError(getErrorMessage(err));
     }
@@ -233,7 +278,33 @@ export function useProjectEditor(projectId: string) {
   }
 
   /**
-   * Send a chat message through the streaming AI pipeline.
+   * Re-sync the active tab's content after a server-side file mutation
+   * (AI change apply or undo). Closes the tab if the file no longer exists.
+   */
+  const resyncActiveTab = useCallback(async () => {
+    if (!activeTab) {
+      return;
+    }
+    try {
+      const refreshed = await getFile(projectId, activeTab.id);
+      openTab({
+        id: refreshed.id,
+        path: refreshed.path,
+        name: refreshed.name,
+        language: refreshed.language,
+        content: refreshed.content,
+        dirty: false,
+      });
+    } catch {
+      // File was deleted by the AI change (or its undo); drop the stale tab.
+      closeTab(activeTab.id);
+    }
+  }, [activeTab, closeTab, openTab, projectId]);
+
+  /**
+   * Send a chat message through the streaming AI pipeline. The Send button
+   * stays disabled (via chatPending) until streaming AND file application
+   * have both fully completed.
    *
    * @param content - User message text.
    */
@@ -277,34 +348,93 @@ export function useProjectEditor(projectId: string) {
     streamHandleRef.current = handle;
 
     try {
+      // Resolves only after the backend has streamed the full response AND
+      // applied any file changes (the WS "done" event is sent last).
       await handle.done;
       setOptimisticMessages([]);
       await queryClient.invalidateQueries({ queryKey: ['chat', projectId] });
       await queryClient.invalidateQueries({ queryKey: ['file-tree', projectId] });
-      await refreshPreviewFiles();
-      if (activeTab) {
-        try {
-          const refreshed = await getFile(projectId, activeTab.id);
-          openTab({
-            id: refreshed.id,
-            path: refreshed.path,
-            name: refreshed.name,
-            language: refreshed.language,
-            content: refreshed.content,
-            dirty: false,
-          });
-        } catch {
-          // Active tab may have been deleted by an AI change.
-        }
-      }
+      await resyncActiveTab();
     } catch (err) {
-      setError(getErrorMessage(err));
+      // Stream errors are already shown via onError; keep a fallback.
+      setError((prev) => prev || getErrorMessage(err));
       setOptimisticMessages([]);
     } finally {
       streamHandleRef.current = null;
       setChatPending(false);
       setStreamingContent('');
     }
+  }
+
+  /**
+   * Revert every file change from the most recent AI change set.
+   */
+  async function handleUndoLastChanges() {
+    if (!canUndo) {
+      return;
+    }
+    setError('');
+    setUndoPending(true);
+    try {
+      await undoLastAiChanges(projectId);
+      await queryClient.invalidateQueries({ queryKey: ['chat', projectId] });
+      await queryClient.invalidateQueries({ queryKey: ['file-tree', projectId] });
+      await resyncActiveTab();
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setUndoPending(false);
+    }
+  }
+
+  /**
+   * Download every project file as a ZIP archive the user can save locally.
+   */
+  async function handleDownloadProject() {
+    setError('');
+    setDownloading(true);
+    try {
+      const files = await fetchAllFiles();
+      await downloadProjectZip(projectQuery.data?.name || 'project', files);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  /**
+   * Open (or regenerate) the Live Preview workspace tab using the latest
+   * saved project state, then switch to it.
+   */
+  async function handleOpenPreview() {
+    setError('');
+    setPreviewTab((prev) => ({ ...prev, open: true, loading: true }));
+    try {
+      const files = await fetchAllFiles();
+      setPreviewTab({ open: true, files, loading: false });
+      setActiveView('preview');
+    } catch (err) {
+      setError(getErrorMessage(err));
+      setPreviewTab((prev) => ({ ...prev, loading: false }));
+    }
+  }
+
+  /**
+   * Switch to an already-open preview tab without regenerating it.
+   */
+  function handleSelectPreviewTab() {
+    if (previewTab.open) {
+      setActiveView('preview');
+    }
+  }
+
+  /**
+   * Close the preview tab. Does not affect project or editor file state.
+   */
+  function handleClosePreviewTab() {
+    setPreviewTab({ open: false, files: [], loading: false });
+    setActiveView((current) => (current === 'preview' ? 'editor' : current));
   }
 
   return {
@@ -315,12 +445,17 @@ export function useProjectEditor(projectId: string) {
     tabs,
     activeTabId,
     activeTab,
+    activeView,
     saving,
     error,
-    flatFiles,
     chatPending,
+    undoPending,
     streamingContent,
-    setActiveTab,
+    lastChangeSet,
+    canUndo,
+    previewTab,
+    downloading,
+    setActiveTab: handleSelectFileTab,
     closeTab,
     updateContent,
     saveActive,
@@ -330,5 +465,10 @@ export function useProjectEditor(projectId: string) {
     handleDeleteNode,
     handleSendChat,
     handleCancelChat,
+    handleUndoLastChanges,
+    handleDownloadProject,
+    handleOpenPreview,
+    handleSelectPreviewTab,
+    handleClosePreviewTab,
   };
 }

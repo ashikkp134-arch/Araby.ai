@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     app_env: str = Field(default="development", alias="APP_ENV")
     app_name: str = Field(default="AI Coding Workspace", alias="APP_NAME")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    
+    OTEL_ENABLED: bool = True
+    OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:6006/v1/traces"
+    OTEL_SERVICE_NAME = "araby-codeai-backend"
+    GUARDRAILS_ENABLED = True
 
     @field_validator("jwt_secret", "jwt_refresh_secret")
     @classmethod

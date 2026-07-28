@@ -333,6 +333,26 @@ class FileService:
         await self._invalidate_project_cache(project_id)
         return FileResponse(**created)
 
+    async def get_raw_content_by_path(self, project_id: str, path: str) -> Optional[str]:
+        """Fetch a file's content by path without ownership checks.
+
+        Used internally by the AI file modifier / undo flow, which already
+        operates on a pre-validated project id.
+
+        Args:
+            project_id: Project id.
+            path: File path.
+
+        Returns:
+            File content, or None if no file exists at that path.
+        """
+        project_oid = parse_object_id(project_id, "project_id")
+        normalized = normalize_path(path)
+        if not normalized:
+            return None
+        existing = await self._files.find_by_path(project_oid, normalized)
+        return existing["content"] if existing else None
+
     async def delete_by_path(self, project_id: str, path: str) -> None:
         """Delete a file by path.
 
