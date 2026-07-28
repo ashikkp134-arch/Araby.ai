@@ -94,9 +94,11 @@ export function EditorPage() {
 
         {chatOpen ? (
           <ChatPanel
-            messages={editor.chatQuery.data?.items || []}
+            messages={editor.chatMessages}
             isSending={editor.chatPending}
+            streamingContent={editor.streamingContent}
             onSend={editor.handleSendChat}
+            onCancel={editor.handleCancelChat}
           />
         ) : (
           <div className="hidden lg:block" />

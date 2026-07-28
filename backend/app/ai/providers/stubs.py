@@ -14,6 +14,7 @@ class AnthropicProvider(LLMProvider):
         messages: List[LLMMessage],
         temperature: float = 0.2,
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> LLMResponse:
         """Raise until Anthropic is configured.
 
@@ -36,6 +37,7 @@ class AnthropicProvider(LLMProvider):
         messages: List[LLMMessage],
         temperature: float = 0.2,
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> AsyncIterator[str]:
         """Raise until Anthropic streaming is configured."""
         raise AppException(
@@ -54,6 +56,7 @@ class GeminiProvider(LLMProvider):
         messages: List[LLMMessage],
         temperature: float = 0.2,
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> LLMResponse:
         """Raise until Gemini is configured."""
         raise AppException(
@@ -67,6 +70,7 @@ class GeminiProvider(LLMProvider):
         messages: List[LLMMessage],
         temperature: float = 0.2,
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> AsyncIterator[str]:
         """Raise until Gemini streaming is configured."""
         raise AppException(
@@ -85,6 +89,7 @@ class OllamaProvider(LLMProvider):
         messages: List[LLMMessage],
         temperature: float = 0.2,
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> LLMResponse:
         """Raise until Ollama is configured."""
         raise AppException(
@@ -98,6 +103,7 @@ class OllamaProvider(LLMProvider):
         messages: List[LLMMessage],
         temperature: float = 0.2,
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> AsyncIterator[str]:
         """Raise until Ollama streaming is configured."""
         raise AppException(
@@ -116,6 +122,7 @@ class AzureOpenAIProvider(LLMProvider):
         messages: List[LLMMessage],
         temperature: float = 0.2,
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> LLMResponse:
         """Raise until Azure OpenAI is configured."""
         raise AppException(
@@ -129,6 +136,7 @@ class AzureOpenAIProvider(LLMProvider):
         messages: List[LLMMessage],
         temperature: float = 0.2,
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> AsyncIterator[str]:
         """Raise until Azure OpenAI streaming is configured."""
         raise AppException(

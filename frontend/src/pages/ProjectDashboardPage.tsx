@@ -24,7 +24,7 @@ export function ProjectDashboardPage() {
   const typedWorkspace = workspaceType as WorkspaceType;
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const folderInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
 
   /**
    * Bind directory-picker attributes that TypeScript's JSX types omit.

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getProject } from '@/api/projects';
 import {
   createFile,
@@ -10,9 +10,9 @@ import {
   getFileTree,
   updateFile,
 } from '@/api/files';
-import { listChatMessages, sendChatMessage } from '@/api/chat';
+import { listChatMessages, streamChatMessage, type StreamChatHandle } from '@/api/chat';
 import { useEditorStore } from '@/stores/editorStore';
-import type { FileNode, ProjectFile } from '@/types';
+import type { ChatMessage, FileNode, ProjectFile } from '@/types';
 import { getErrorMessage } from '@/utils/helpers';
 
 /**
@@ -36,6 +36,10 @@ export function useProjectEditor(projectId: string) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [flatFiles, setFlatFiles] = useState<ProjectFile[]>([]);
+  const [chatPending, setChatPending] = useState(false);
+  const [streamingContent, setStreamingContent] = useState('');
+  const [optimisticMessages, setOptimisticMessages] = useState<ChatMessage[]>([]);
+  const streamHandleRef = useRef<StreamChatHandle | null>(null);
 
   const projectQuery = useQuery({
     queryKey: ['project', projectId],
@@ -57,13 +61,26 @@ export function useProjectEditor(projectId: string) {
 
   useEffect(() => {
     reset();
-    return () => reset();
+    setOptimisticMessages([]);
+    setStreamingContent('');
+    return () => {
+      streamHandleRef.current?.cancel();
+      reset();
+    };
   }, [projectId, reset]);
 
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabId) ?? null,
     [tabs, activeTabId],
   );
+
+  const chatMessages = useMemo(() => {
+    const server = chatQuery.data?.items ?? [];
+    if (!optimisticMessages.length) {
+      return server;
+    }
+    return [...server, ...optimisticMessages];
+  }, [chatQuery.data?.items, optimisticMessages]);
 
   const refreshPreviewFiles = useCallback(async () => {
     if (projectQuery.data?.workspace_type !== 'website') {
@@ -205,42 +222,88 @@ export function useProjectEditor(projectId: string) {
     }
   }
 
-  const chatMutation = useMutation({
-    mutationFn: (content: string) =>
-      sendChatMessage(projectId, {
-        content,
-        current_file_path: activeTab?.path,
-        apply_changes: true,
-      }),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['chat', projectId] });
-      await queryClient.invalidateQueries({ queryKey: ['file-tree', projectId] });
-      await refreshPreviewFiles();
-      if (activeTab) {
-        const refreshed = await getFile(projectId, activeTab.id);
-        openTab({
-          id: refreshed.id,
-          path: refreshed.path,
-          name: refreshed.name,
-          language: refreshed.language,
-          content: refreshed.content,
-          dirty: false,
-        });
-      }
-    },
-  });
+  /**
+   * Cancel an in-flight streaming chat request.
+   */
+  function handleCancelChat() {
+    streamHandleRef.current?.cancel();
+    streamHandleRef.current = null;
+    setChatPending(false);
+    setStreamingContent('');
+  }
 
   /**
-   * Send a chat message through the AI pipeline.
+   * Send a chat message through the streaming AI pipeline.
    *
    * @param content - User message text.
    */
   async function handleSendChat(content: string) {
     setError('');
+    setChatPending(true);
+    setStreamingContent('');
+    setOptimisticMessages([
+      {
+        id: `local-user-${Date.now()}`,
+        session_id: 'local',
+        project_id: projectId,
+        role: 'user',
+        content,
+        file_changes: [],
+        created_at: new Date().toISOString(),
+      },
+    ]);
+
+    const handle = streamChatMessage(
+      projectId,
+      {
+        content,
+        current_file_path: activeTab?.path,
+        open_tabs: tabs.map((tab) => tab.path),
+        apply_changes: true,
+      },
+      {
+        onDelta: (chunk) => {
+          setStreamingContent((prev) => prev + chunk);
+        },
+        onDone: () => {
+          setStreamingContent('');
+        },
+        onError: (message) => {
+          setError(message);
+          setStreamingContent('');
+        },
+      },
+    );
+    streamHandleRef.current = handle;
+
     try {
-      await chatMutation.mutateAsync(content);
+      await handle.done;
+      setOptimisticMessages([]);
+      await queryClient.invalidateQueries({ queryKey: ['chat', projectId] });
+      await queryClient.invalidateQueries({ queryKey: ['file-tree', projectId] });
+      await refreshPreviewFiles();
+      if (activeTab) {
+        try {
+          const refreshed = await getFile(projectId, activeTab.id);
+          openTab({
+            id: refreshed.id,
+            path: refreshed.path,
+            name: refreshed.name,
+            language: refreshed.language,
+            content: refreshed.content,
+            dirty: false,
+          });
+        } catch {
+          // Active tab may have been deleted by an AI change.
+        }
+      }
     } catch (err) {
       setError(getErrorMessage(err));
+      setOptimisticMessages([]);
+    } finally {
+      streamHandleRef.current = null;
+      setChatPending(false);
+      setStreamingContent('');
     }
   }
 
@@ -248,13 +311,15 @@ export function useProjectEditor(projectId: string) {
     projectQuery,
     treeQuery,
     chatQuery,
+    chatMessages,
     tabs,
     activeTabId,
     activeTab,
     saving,
     error,
     flatFiles,
-    chatPending: chatMutation.isPending,
+    chatPending,
+    streamingContent,
     setActiveTab,
     closeTab,
     updateContent,
@@ -264,5 +329,6 @@ export function useProjectEditor(projectId: string) {
     handleCreateFolder,
     handleDeleteNode,
     handleSendChat,
+    handleCancelChat,
   };
 }

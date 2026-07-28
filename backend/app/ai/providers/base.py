@@ -48,6 +48,7 @@ class LLMProvider(ABC):
         messages: List[LLMMessage],
         temperature: float = 0.2,
         max_tokens: int = 4096,
+        model: Optional[str] = None,
     ) -> LLMResponse:
         """Generate a non-streaming completion.
 
@@ -55,6 +56,7 @@ class LLMProvider(ABC):
             messages: Conversation messages.
             temperature: Sampling temperature.
             max_tokens: Maximum output tokens.
+            model: Optional model override for this call.
 
         Returns:
             Normalized LLMResponse.
@@ -66,6 +68,7 @@ class LLMProvider(ABC):
         messages: List[LLMMessage],
         temperature: float = 0.2,
         max_tokens: int = 4096,
+        model: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """Generate a streaming completion.
 
@@ -73,6 +76,7 @@ class LLMProvider(ABC):
             messages: Conversation messages.
             temperature: Sampling temperature.
             max_tokens: Maximum output tokens.
+            model: Optional model override for this call.
 
         Yields:
             Content deltas as they arrive.
