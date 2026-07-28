@@ -27,6 +27,7 @@ class ProjectContext:
         selected_code: Selected code snippet.
         chat_history: Recent chat turns.
         recent_paths: Recently opened file paths.
+        open_tabs: Currently open editor tab paths.
         token_estimate: Approximate context tokens.
     """
 
@@ -37,6 +38,7 @@ class ProjectContext:
     selected_code: Optional[str] = None
     chat_history: List[Dict[str, str]] = field(default_factory=list)
     recent_paths: List[str] = field(default_factory=list)
+    open_tabs: List[str] = field(default_factory=list)
     token_estimate: int = 0
 
 
@@ -63,6 +65,7 @@ class ContextBuilder:
         current_file_path: Optional[str] = None,
         selected_code: Optional[str] = None,
         recent_paths: Optional[List[str]] = None,
+        open_tabs: Optional[List[str]] = None,
     ) -> ProjectContext:
         """Assemble prioritized project context.
 
@@ -74,14 +77,16 @@ class ContextBuilder:
             current_file_path: Currently open file path.
             selected_code: Selected code snippet.
             recent_paths: Recently opened paths.
+            open_tabs: Open editor tab paths.
 
         Returns:
             ProjectContext ready for prompt building.
         """
         recent = recent_paths or []
+        tabs = dedupe_preserve_order([p for p in (open_tabs or []) if p])
         imports = self._extract_imports(files, current_file_path)
         priority_paths = dedupe_preserve_order(
-            [p for p in [current_file_path, *imports, *recent] if p]
+            [p for p in [current_file_path, *imports, *tabs, *recent] if p]
         )
         relevant = self._select_relevant_files(files, priority_paths)
         current_file = None
@@ -115,6 +120,7 @@ class ContextBuilder:
             selected_code=truncate_text(selected_code, 2000) if selected_code else None,
             chat_history=history,
             recent_paths=recent,
+            open_tabs=tabs,
         )
         context.token_estimate = estimate_tokens(json.dumps(context.__dict__, default=str))
         await self._cache.set(

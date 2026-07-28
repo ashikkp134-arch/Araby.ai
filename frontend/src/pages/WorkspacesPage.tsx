@@ -21,7 +21,7 @@ export function WorkspacesPage() {
         </h1>
         <p className="mt-4 text-base leading-7 text-slate-300">
           Spin up isolated JavaScript, Python, or Website Builder projects with AI chat, nested
-          files, and a Monaco editor.
+          files & editor.
         </p>
       </div>
 

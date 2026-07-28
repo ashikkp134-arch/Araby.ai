@@ -13,12 +13,14 @@ class ChatMessageRequest(BaseModel):
         content: User message text.
         current_file_path: Currently open file path.
         selected_code: Optional selected code snippet.
+        open_tabs: Paths of open editor tabs.
         apply_changes: Whether AI may modify files.
     """
 
     content: str = Field(min_length=1, max_length=8000)
     current_file_path: Optional[str] = None
     selected_code: Optional[str] = None
+    open_tabs: List[str] = Field(default_factory=list)
     apply_changes: bool = True
 
 

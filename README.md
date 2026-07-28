@@ -6,9 +6,9 @@ Production-oriented AI coding platform with isolated JavaScript, Python, and Web
 
 ```text
 AI-Coding-Workspace/
-├── backend/          # FastAPI + Motor + Redis + AI pipeline
-├── frontend/         # React + Vite + TypeScript + Tailwind
-├── docker-compose.yml
+├── backend/             # FastAPI + Motor + Redis + AI pipeline (+ Dockerfile)
+├── frontend/            # React + Vite + nginx production image (+ Dockerfile)
+├── docker-compose.yml   # Mongo + Redis + backend + frontend
 └── README.md
 ```
 
@@ -21,28 +21,81 @@ Router → Service → Repository → MongoDB
 ### AI pipeline
 
 ```text
-Router → AI Service → Prompt Builder → Context Builder → LLM Provider → Response Parser → File Modifier
+Router → Request Router (light vs coding) → Workspace System Prompt
+      → Context Builder → LLM (stream/complete) → Response Parser → File Modifier
 ```
+
+Hybrid routing uses `OPENAI_MODEL_LIGHT` for explanations/docs and `OPENAI_MODEL_CODING`
+for multi-file edits and generation (both fall back to `OPENAI_MODEL`). Chat streams over
+`/ws/chat/{project_id}` with structured ```file path=… action=…``` blocks applied automatically.
 
 ## Prerequisites
 
-- Python 3.12
-- Node.js 20+
-- MongoDB 7
-- Redis 7
+- Docker + Docker Compose (recommended for one-command production run)
+- **Or** for local dev: Python 3.12, Node.js 20+, MongoDB 7, Redis 7
 - OpenAI API key
 
-> Tip: Prefer `docker compose up -d` for MongoDB and Redis. On older Linux hosts (glibc < 2.32), the frontend is pinned to Vite 4 for compatibility.
+> On older Linux hosts (glibc < 2.32), the frontend is pinned to Vite 4 for compatibility.
 
-## Quick start
+## Production run (single Docker command)
 
-### 1. Infrastructure
+### 0. Install Docker (Ubuntu) — only if `docker` is missing
 
 ```bash
-docker compose up -d
+sudo apt update
+sudo apt install -y docker.io docker-compose
+sudo usermod -aG docker "$USER"
+# Log out/in (or run: newgrp docker) so group membership applies
+docker --version
+docker-compose --version
 ```
 
-This starts MongoDB on `27017` and Redis on `6379`.
+Prefer the Compose V2 plugin if available (`docker compose` without hyphen). Both work with this repo.
+
+### 1. Configure backend secrets
+
+```bash
+cd ~/araby_codeai
+cp backend/.env.example backend/.env
+# Edit backend/.env — set at least:
+#   OPENAI_API_KEY=sk-...
+#   JWT_SECRET=<32+ random chars>
+#   JWT_REFRESH_SECRET=<32+ different random chars>
+```
+
+Compose overrides `MONGO_URI` / `REDIS_URL` to use Docker service names automatically.
+
+### 2. Build and start everything
+
+```bash
+docker compose up -d --build
+# If that fails on older installs:
+# docker-compose up -d --build
+```
+
+This starts **MongoDB + Redis + FastAPI backend + nginx frontend**.
+
+### 3. Open the app
+
+- App: [http://localhost](http://localhost)
+- API health: [http://localhost/health](http://localhost/health)
+
+### Useful commands
+
+```bash
+docker compose ps
+docker compose logs -f
+docker compose down          # stop
+docker compose down -v       # stop + wipe DB volumes
+```
+
+## Local development (without containerising the app)
+
+### 1. Infrastructure only
+
+```bash
+docker compose up -d mongodb redis
+```
 
 ### 2. Backend
 
@@ -83,7 +136,9 @@ App: [http://localhost:5173](http://localhost:5173)
 | `JWT_SECRET` | Access token signing secret (min 32 chars) |
 | `JWT_REFRESH_SECRET` | Refresh token signing secret (min 32 chars) |
 | `OPENAI_API_KEY` | OpenAI API key |
-| `OPENAI_MODEL` | Model name (default `gpt-4o-mini`) |
+| `OPENAI_MODEL` | Default / fallback model (default `gpt-4o-mini`) |
+| `OPENAI_MODEL_LIGHT` | Fast model for explanations/docs (optional) |
+| `OPENAI_MODEL_CODING` | Stronger model for generation/edits (optional) |
 | `OPENAI_BASE_URL` | Optional OpenAI-compatible base URL (empty = OpenAI) |
 | `LLM_PROVIDER` | Provider key (`openai`, stubs for others) |
 | `ACCESS_TOKEN_EXPIRE` | Access token lifetime in minutes |

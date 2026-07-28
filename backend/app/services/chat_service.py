@@ -88,4 +88,5 @@ class ChatService:
             current_file_path=payload.current_file_path,
             selected_code=payload.selected_code,
             apply_changes=payload.apply_changes,
+            open_tabs=payload.open_tabs,
         )

@@ -17,7 +17,9 @@ class Settings(BaseSettings):
         jwt_secret: Secret used to sign access tokens.
         jwt_refresh_secret: Secret used to sign refresh tokens.
         openai_api_key: OpenAI API key for LLM calls.
-        openai_model: Default OpenAI model identifier.
+        openai_model: Default OpenAI model identifier (fallback for both tiers).
+        openai_model_light: Fast/cheap model for explanations and docs.
+        openai_model_coding: Stronger model for generation and multi-file edits.
         openai_base_url: Optional OpenAI-compatible API base URL (empty = OpenAI).
         llm_provider: Active LLM provider name.
         access_token_expire: Access token lifetime in minutes.
@@ -44,6 +46,8 @@ class Settings(BaseSettings):
     jwt_refresh_secret: str = Field(..., alias="JWT_REFRESH_SECRET")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
+    openai_model_light: str = Field(default="", alias="OPENAI_MODEL_LIGHT")
+    openai_model_coding: str = Field(default="", alias="OPENAI_MODEL_CODING")
     # Optional OpenAI-compatible base URL (e.g. https://api.x.ai/v1 for Grok).
     # Leave empty to use the default OpenAI endpoint.
     openai_base_url: str = Field(default="", alias="OPENAI_BASE_URL")

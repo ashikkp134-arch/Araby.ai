@@ -1,9 +1,16 @@
+# Compatible with docker-compose 1.25+ (Ubuntu 20.04) and Docker Compose V2.
+# Usage:
+#   cp backend/.env.example backend/.env   # set OPENAI_API_KEY + JWT secrets
+#   docker-compose up -d --build
+#   Open http://localhost
+
+version: "3.3"
+
 services:
   mongodb:
     image: mongo:7
     container_name: ai-workspace-mongo
-    ports:
-      - "27017:27017"
+    restart: unless-stopped
     volumes:
       - mongo_data:/data/db
     environment:
@@ -12,20 +19,48 @@ services:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 8
 
   redis:
     image: redis:7-alpine
     container_name: ai-workspace-redis
-    ports:
-      - "6379:6379"
+    restart: unless-stopped
     volumes:
       - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 8
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ai-workspace-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      MONGO_URI: mongodb://mongodb:27017
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: http://localhost:8080,http://127.0.0.1:8080,http://localhost,http://127.0.0.1
+      APP_ENV: production
+      COOKIE_SECURE: "false"
+    depends_on:
+      - mongodb
+      - redis
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ai-workspace-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
 
 volumes:
   mongo_data:

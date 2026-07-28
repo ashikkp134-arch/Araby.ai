@@ -65,6 +65,7 @@ class OpenAIProvider(LLMProvider):
         messages: List[LLMMessage],
         temperature: float = 0.2,
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> LLMResponse:
         """Generate a non-streaming OpenAI completion.
 
@@ -72,6 +73,7 @@ class OpenAIProvider(LLMProvider):
             messages: Conversation messages.
             temperature: Sampling temperature.
             max_tokens: Maximum output tokens.
+            model: Optional model override for this call.
 
         Returns:
             Normalized LLMResponse.
@@ -85,9 +87,10 @@ class OpenAIProvider(LLMProvider):
                 status_code=503,
                 error_code="llm_not_configured",
             )
+        use_model = (model or self._model).strip()
         try:
             response = await self._client.chat.completions.create(
-                model=self._model,
+                model=use_model,
                 messages=[{"role": m.role, "content": m.content} for m in messages],
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -116,6 +119,7 @@ class OpenAIProvider(LLMProvider):
         messages: List[LLMMessage],
         temperature: float = 0.2,
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> AsyncIterator[str]:
         """Stream an OpenAI completion.
 
@@ -123,6 +127,7 @@ class OpenAIProvider(LLMProvider):
             messages: Conversation messages.
             temperature: Sampling temperature.
             max_tokens: Maximum output tokens.
+            model: Optional model override for this call.
 
         Yields:
             Content deltas.
@@ -133,13 +138,23 @@ class OpenAIProvider(LLMProvider):
                 status_code=503,
                 error_code="llm_not_configured",
             )
-        stream = await self._client.chat.completions.create(
-            model=self._model,
-            messages=[{"role": m.role, "content": m.content} for m in messages],
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=True,
-        )
+        use_model = (model or self._model).strip()
+        try:
+            stream = await self._client.chat.completions.create(
+                model=use_model,
+                messages=[{"role": m.role, "content": m.content} for m in messages],
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+            )
+        except Exception as exc:
+            logger.exception("OpenAI stream failed")
+            detail = _provider_error_detail(exc)
+            raise AppException(
+                detail,
+                status_code=502,
+                error_code="llm_provider_error",
+            ) from exc
         async for chunk in stream:
             delta = chunk.choices[0].delta.content if chunk.choices else None
             if delta:
