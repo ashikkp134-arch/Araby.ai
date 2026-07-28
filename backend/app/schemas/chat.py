@@ -51,6 +51,7 @@ class ChatMessageResponse(BaseModel):
         model: Model used for assistant replies.
         latency_ms: Response latency in milliseconds.
         file_changes: Applied or proposed file changes.
+        undone: Whether this message's file changes were reverted via undo.
         created_at: Creation timestamp.
     """
 
@@ -63,6 +64,7 @@ class ChatMessageResponse(BaseModel):
     model: Optional[str] = None
     latency_ms: Optional[int] = None
     file_changes: List[FileChangeProposal] = Field(default_factory=list)
+    undone: bool = False
     created_at: datetime
 
 
@@ -96,3 +98,15 @@ class ChatCompletionResponse(BaseModel):
     assistant_message: ChatMessageResponse
     applied_changes: List[FileChangeProposal] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class UndoChangesResponse(BaseModel):
+    """Result of reverting the latest AI-applied change set.
+
+    Attributes:
+        message_id: Assistant message whose changes were reverted.
+        restored_paths: File paths that were restored or removed.
+    """
+
+    message_id: str
+    restored_paths: List[str] = Field(default_factory=list)

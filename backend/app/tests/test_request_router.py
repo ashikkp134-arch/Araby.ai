@@ -22,3 +22,4 @@ def test_website_build_routes_to_website_agent() -> None:
     decision = RequestRouter().classify("Build a SaaS landing page", "website")
     assert decision.tier == ModelTier.CODING
     assert decision.category == RequestCategory.WEBSITE_BUILDER
+    assert decision.max_tokens == 16384

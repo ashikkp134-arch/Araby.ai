@@ -2,7 +2,7 @@
 
 from typing import AsyncIterator, List
 
-from app.ai.providers.base import LLMMessage, LLMProvider, LLMResponse
+from app.ai.providers.base import LLMMessage, LLMProvider, LLMResponse, StreamChunk
 from app.utils.exceptions import AppException
 
 
@@ -38,14 +38,14 @@ class AnthropicProvider(LLMProvider):
         temperature: float = 0.2,
         max_tokens: int = 4096,
         model: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[StreamChunk]:
         """Raise until Anthropic streaming is configured."""
         raise AppException(
             "Anthropic provider is not configured",
             status_code=501,
             error_code="provider_not_implemented",
         )
-        yield ""  # pragma: no cover
+        yield StreamChunk()  # pragma: no cover
 
 
 class GeminiProvider(LLMProvider):
@@ -71,14 +71,14 @@ class GeminiProvider(LLMProvider):
         temperature: float = 0.2,
         max_tokens: int = 4096,
         model: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[StreamChunk]:
         """Raise until Gemini streaming is configured."""
         raise AppException(
             "Gemini provider is not configured",
             status_code=501,
             error_code="provider_not_implemented",
         )
-        yield ""  # pragma: no cover
+        yield StreamChunk()  # pragma: no cover
 
 
 class OllamaProvider(LLMProvider):
@@ -104,14 +104,14 @@ class OllamaProvider(LLMProvider):
         temperature: float = 0.2,
         max_tokens: int = 4096,
         model: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[StreamChunk]:
         """Raise until Ollama streaming is configured."""
         raise AppException(
             "Ollama provider is not configured",
             status_code=501,
             error_code="provider_not_implemented",
         )
-        yield ""  # pragma: no cover
+        yield StreamChunk()  # pragma: no cover
 
 
 class AzureOpenAIProvider(LLMProvider):
@@ -137,11 +137,11 @@ class AzureOpenAIProvider(LLMProvider):
         temperature: float = 0.2,
         max_tokens: int = 4096,
         model: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[StreamChunk]:
         """Raise until Azure OpenAI streaming is configured."""
         raise AppException(
             "Azure OpenAI provider is not configured",
             status_code=501,
             error_code="provider_not_implemented",
         )
-        yield ""  # pragma: no cover
+        yield StreamChunk()  # pragma: no cover

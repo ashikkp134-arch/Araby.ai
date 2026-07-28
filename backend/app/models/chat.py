@@ -33,6 +33,7 @@ def build_chat_message_document(
     model: Optional[str] = None,
     latency_ms: Optional[int] = None,
     file_changes: Optional[List[Dict[str, Any]]] = None,
+    reverse_changes: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Build a chat message document.
 
@@ -45,6 +46,9 @@ def build_chat_message_document(
         model: Optional model name.
         latency_ms: Optional latency.
         file_changes: Optional applied file changes.
+        reverse_changes: Optional undo data for applied file changes
+            (path, prior existence, prior content) captured when the AI
+            modifies files, so the whole change set can be reverted later.
 
     Returns:
         MongoDB-ready chat message document.
@@ -58,5 +62,7 @@ def build_chat_message_document(
         "model": model,
         "latency_ms": latency_ms,
         "file_changes": file_changes or [],
+        "reverse_changes": reverse_changes or [],
+        "undone": False,
         "created_at": utc_now(),
     }

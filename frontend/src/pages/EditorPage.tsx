@@ -10,11 +10,11 @@ import { useProjectEditor } from '@/hooks/useProjectEditor';
 import { useUiStore } from '@/stores/uiStore';
 
 /**
- * Full project editor with files, Monaco, chat, and optional preview.
+ * Full project editor with files, Monaco, chat, and a dedicated preview tab.
  */
 export function EditorPage() {
   const { projectId = '' } = useParams<{ projectId: string }>();
-  const { chatOpen, previewOpen, toggleChat, togglePreview } = useUiStore();
+  const { chatOpen, toggleChat } = useUiStore();
   const editor = useProjectEditor(projectId);
 
   if (editor.projectQuery.isLoading) {
@@ -31,10 +31,11 @@ export function EditorPage() {
 
   const project = editor.projectQuery.data;
   const isWebsite = project.workspace_type === 'website';
+  const showingPreview = editor.activeView === 'preview' && editor.previewTab.open;
 
   return (
-    <div className="flex h-[calc(100vh-73px)] flex-col">
-      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+    <div className="flex h-[calc(100vh-73px)] flex-col overflow-hidden">
+      <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3">
         <div>
           <Link
             to={`/workspaces/${project.workspace_type}`}
@@ -45,9 +46,22 @@ export function EditorPage() {
           <h1 className="font-display text-xl">{project.name}</h1>
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void editor.handleDownloadProject()}
+            disabled={editor.downloading}
+          >
+            {editor.downloading ? 'Saving ZIP…' : 'Save project'}
+          </Button>
           {isWebsite ? (
-            <Button variant="secondary" size="sm" onClick={togglePreview}>
-              {previewOpen ? 'Hide preview' : 'Live preview'}
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void editor.handleOpenPreview()}
+              disabled={editor.previewTab.loading}
+            >
+              {editor.previewTab.loading ? 'Loading preview…' : 'Live preview'}
             </Button>
           ) : null}
           <Button variant="secondary" size="sm" onClick={toggleChat}>
@@ -57,10 +71,10 @@ export function EditorPage() {
       </div>
 
       {editor.error ? (
-        <p className="bg-rose-500/10 px-4 py-2 text-sm text-rose-300">{editor.error}</p>
+        <p className="shrink-0 bg-rose-500/10 px-4 py-2 text-sm text-rose-300">{editor.error}</p>
       ) : null}
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[240px_minmax(0,1fr)_minmax(280px,340px)]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[240px_minmax(0,1fr)_minmax(280px,340px)]">
         <FileExplorer
           nodes={editor.treeQuery.data || []}
           activePath={editor.activeTab?.path}
@@ -70,25 +84,36 @@ export function EditorPage() {
           onDeleteNode={(node) => void editor.handleDeleteNode(node)}
         />
 
-        <div className="flex min-h-0 flex-col border-r border-white/10">
+        <div className="flex min-h-0 flex-col overflow-hidden border-r border-white/10">
           <EditorTabs
             tabs={editor.tabs}
             activeTabId={editor.activeTabId}
             onSelect={editor.setActiveTab}
             onClose={editor.closeTab}
+            previewOpen={editor.previewTab.open}
+            previewActive={showingPreview}
+            onSelectPreview={editor.handleSelectPreviewTab}
+            onClosePreview={editor.handleClosePreviewTab}
           />
-          <div className={`min-h-0 flex-1 ${previewOpen && isWebsite ? 'grid grid-rows-2' : ''}`}>
-            <CodeEditor
-              tab={editor.activeTab}
-              onChange={(value) => {
-                if (editor.activeTab) {
-                  editor.updateContent(editor.activeTab.id, value);
-                }
-              }}
-              onSave={() => void editor.saveActive()}
-              saving={editor.saving}
-            />
-            {previewOpen && isWebsite ? <LivePreview files={editor.flatFiles} /> : null}
+          <div className="min-h-0 flex-1 overflow-hidden">
+            {showingPreview ? (
+              <LivePreview
+                files={editor.previewTab.files}
+                onRefresh={() => void editor.handleOpenPreview()}
+                refreshing={editor.previewTab.loading}
+              />
+            ) : (
+              <CodeEditor
+                tab={editor.activeTab}
+                onChange={(value) => {
+                  if (editor.activeTab) {
+                    editor.updateContent(editor.activeTab.id, value);
+                  }
+                }}
+                onSave={() => void editor.saveActive()}
+                saving={editor.saving}
+              />
+            )}
           </div>
         </div>
 
@@ -99,6 +124,10 @@ export function EditorPage() {
             streamingContent={editor.streamingContent}
             onSend={editor.handleSendChat}
             onCancel={editor.handleCancelChat}
+            appliedChangesCount={editor.lastChangeSet?.file_changes.length ?? 0}
+            canUndo={editor.canUndo}
+            undoPending={editor.undoPending}
+            onUndo={() => void editor.handleUndoLastChanges()}
           />
         ) : (
           <div className="hidden lg:block" />

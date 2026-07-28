@@ -53,6 +53,7 @@ class ChatRepository:
         model: Optional[str] = None,
         latency_ms: Optional[int] = None,
         file_changes: Optional[List[Dict[str, Any]]] = None,
+        reverse_changes: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Persist a chat message and touch the session.
 
@@ -65,6 +66,7 @@ class ChatRepository:
             model: Optional model name.
             latency_ms: Optional latency.
             file_changes: Optional file change payloads.
+            reverse_changes: Optional undo data for the applied file changes.
 
         Returns:
             Serialized message document.
@@ -78,6 +80,7 @@ class ChatRepository:
             model=model,
             latency_ms=latency_ms,
             file_changes=file_changes,
+            reverse_changes=reverse_changes,
         )
         result = await self._messages.insert_one(doc)
         doc["_id"] = result.inserted_id
@@ -127,6 +130,40 @@ class ChatRepository:
         docs = await cursor.to_list(length=limit)
         docs.reverse()
         return [serialize_doc(doc) for doc in docs]  # type: ignore[misc]
+
+    async def find_latest_undoable_message(
+        self,
+        project_id: ObjectId,
+    ) -> Optional[Dict[str, Any]]:
+        """Find the most recent assistant message with un-reverted file changes.
+
+        Args:
+            project_id: Parent project id.
+
+        Returns:
+            Serialized message document, or None if nothing to undo.
+        """
+        doc = await self._messages.find_one(
+            {
+                "project_id": project_id,
+                "role": "assistant",
+                "reverse_changes.0": {"$exists": True},
+                "undone": {"$ne": True},
+            },
+            sort=[("created_at", -1)],
+        )
+        return serialize_doc(doc)
+
+    async def mark_undone(self, message_id: ObjectId) -> None:
+        """Flag a message's file changes as reverted.
+
+        Args:
+            message_id: Chat message id.
+        """
+        await self._messages.update_one(
+            {"_id": message_id},
+            {"$set": {"undone": True}},
+        )
 
     async def delete_for_project(self, project_id: ObjectId) -> None:
         """Delete chat sessions and messages for a project.

@@ -39,6 +39,27 @@ class LLMResponse:
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class StreamChunk:
+    """Streaming chunk from an LLM provider.
+
+    Attributes:
+        content: Text delta (empty for usage-only final chunk).
+        prompt_tokens: Prompt tokens when usage is known.
+        completion_tokens: Completion tokens when usage is known.
+        total_tokens: Total tokens when usage is known.
+        model: Model id when reported.
+        has_usage: Whether token fields were populated.
+    """
+
+    content: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    model: str = ""
+    has_usage: bool = False
+
+
 class LLMProvider(ABC):
     """Abstract provider interface for LLM backends."""
 
@@ -69,7 +90,7 @@ class LLMProvider(ABC):
         temperature: float = 0.2,
         max_tokens: int = 4096,
         model: Optional[str] = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[StreamChunk]:
         """Generate a streaming completion.
 
         Args:
@@ -79,5 +100,5 @@ class LLMProvider(ABC):
             model: Optional model override for this call.
 
         Yields:
-            Content deltas as they arrive.
+            StreamChunk text deltas and a final usage chunk when available.
         """

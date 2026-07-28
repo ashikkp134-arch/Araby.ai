@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from jose import JWTError
 
-from app.ai.pipelines.chat_pipeline import AIPipeline
+from app.ai.pipelines.chat_pipeline import AIPipeline, _user_facing_stream_error
 from app.core.database import get_database
 from app.core.jwt import decode_access_token
 from app.core.redis import RedisCache, get_redis
@@ -15,6 +15,7 @@ from app.repositories.file_repository import FileRepository, FolderRepository
 from app.repositories.project_repository import ProjectRepository
 from app.services.file_service import FileService
 from app.services.project_service import ProjectService
+from app.utils.exceptions import AppException
 
 logger = logging.getLogger(__name__)
 
@@ -76,30 +77,41 @@ async def chat_stream(websocket: WebSocket, project_id: str) -> None:
 
             apply_changes = data.get("apply_changes", True)
             open_tabs = data.get("open_tabs") or []
-            async for event in pipeline.run_stream(
-                user_id=user_id,
-                project_id=project_id,
-                content=content,
-                current_file_path=data.get("current_file_path"),
-                selected_code=data.get("selected_code"),
-                apply_changes=bool(apply_changes),
-                open_tabs=list(open_tabs) if isinstance(open_tabs, list) else [],
-            ):
-                if event.type == "start":
-                    await websocket.send_json({"type": "start", "metadata": event.metadata})
-                elif event.type == "delta":
-                    await websocket.send_json({"type": "delta", "content": event.content})
-                elif event.type == "error":
-                    await websocket.send_json({"type": "error", "message": event.content})
-                elif event.type == "done":
-                    await websocket.send_json(
-                        {
-                            "type": "done",
-                            "content": event.content,
-                            "file_changes": [c.model_dump() for c in event.file_changes],
-                            "metadata": event.metadata,
-                        }
-                    )
+            try:
+                async for event in pipeline.run_stream(
+                    user_id=user_id,
+                    project_id=project_id,
+                    content=content,
+                    current_file_path=data.get("current_file_path"),
+                    selected_code=data.get("selected_code"),
+                    apply_changes=bool(apply_changes),
+                    open_tabs=list(open_tabs) if isinstance(open_tabs, list) else [],
+                ):
+                    if event.type == "start":
+                        await websocket.send_json({"type": "start", "metadata": event.metadata})
+                    elif event.type == "delta":
+                        await websocket.send_json({"type": "delta", "content": event.content})
+                    elif event.type == "error":
+                        await websocket.send_json({"type": "error", "message": event.content})
+                    elif event.type == "done":
+                        await websocket.send_json(
+                            {
+                                "type": "done",
+                                "content": event.content,
+                                "file_changes": [c.model_dump() for c in event.file_changes],
+                                "metadata": event.metadata,
+                            }
+                        )
+            except AppException as exc:
+                logger.warning("Chat turn blocked/failed: %s", exc.message)
+                await websocket.send_json(
+                    {"type": "error", "message": _user_facing_stream_error(exc)}
+                )
+            except Exception as exc:
+                logger.exception("Chat turn failed for project %s", project_id)
+                await websocket.send_json(
+                    {"type": "error", "message": _user_facing_stream_error(exc)}
+                )
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected for project %s", project_id)
     except JWTError:
@@ -111,7 +123,9 @@ async def chat_stream(websocket: WebSocket, project_id: str) -> None:
     except Exception as exc:
         logger.exception("WebSocket chat failed: %s", exc)
         try:
-            await websocket.send_json({"type": "error", "message": str(exc) or "Stream failed"})
+            await websocket.send_json(
+                {"type": "error", "message": _user_facing_stream_error(exc)}
+            )
             await websocket.close()
         except Exception:
             pass

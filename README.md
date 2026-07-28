@@ -73,12 +73,13 @@ docker compose up -d --build
 # docker-compose up -d --build
 ```
 
-This starts **MongoDB + Redis + FastAPI backend + nginx frontend**.
+This starts **MongoDB + Redis + Phoenix (traces) + FastAPI backend + nginx frontend**.
 
 ### 3. Open the app
 
 - App: [http://localhost](http://localhost)
 - API health: [http://localhost/health](http://localhost/health)
+- Phoenix traces: [http://localhost:6006](http://localhost:6006)
 
 ### Useful commands
 
@@ -94,7 +95,7 @@ docker compose down -v       # stop + wipe DB volumes
 ### 1. Infrastructure only
 
 ```bash
-docker compose up -d mongodb redis
+docker compose up -d mongodb redis phoenix
 ```
 
 ### 2. Backend
@@ -144,6 +145,12 @@ App: [http://localhost:5173](http://localhost:5173)
 | `ACCESS_TOKEN_EXPIRE` | Access token lifetime in minutes |
 | `REFRESH_TOKEN_EXPIRE` | Refresh token lifetime in minutes |
 | `CORS_ORIGINS` | Comma-separated allowed origins |
+| `OTEL_ENABLED` | Enable OpenTelemetry + OpenInference tracing (default `true`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP HTTP traces URL (Phoenix: `http://localhost:6006/v1/traces`) |
+| `OTEL_SERVICE_NAME` | Service name in traces |
+| `GUARDRAILS_ENABLED` | Run LLM input/output guardrails (default `true`) |
+| `GUARDRAILS_BLOCK_ON_INPUT` | Block prompt-injection style inputs |
+| `GUARDRAILS_BLOCK_ON_OUTPUT` | Block unsafe model output / file applies |
 
 ### Frontend (`frontend/.env`)
 

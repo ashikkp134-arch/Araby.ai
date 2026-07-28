@@ -22,8 +22,8 @@ export function FileExplorer({
   onDeleteNode,
 }: FileExplorerProps) {
   return (
-    <aside className="flex h-full flex-col border-r border-white/10 bg-ink-950/60">
-      <div className="flex items-center justify-between border-b border-white/10 px-3 py-3">
+    <aside className="flex h-full min-h-0 flex-col overflow-hidden border-r border-white/10 bg-ink-950/60">
+      <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-3 py-3">
         <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Files</h2>
         <div className="flex gap-1">
           <button
@@ -44,7 +44,7 @@ export function FileExplorer({
           </button>
         </div>
       </div>
-      <div className="flex-1 overflow-auto p-2">
+      <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {nodes.length === 0 ? (
           <p className="px-2 py-4 text-sm text-slate-500">No files yet.</p>
         ) : (
