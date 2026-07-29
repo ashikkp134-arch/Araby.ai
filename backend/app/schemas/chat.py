@@ -24,6 +24,60 @@ class ChatMessageRequest(BaseModel):
     apply_changes: bool = True
 
 
+class DiffLine(BaseModel):
+    """One rendered line inside a diff hunk.
+
+    Attributes:
+        type: context, add, or remove.
+        old_line: 1-based line number before the change (None for additions).
+        new_line: 1-based line number after the change (None for removals).
+        content: Line text without its trailing newline.
+    """
+
+    type: str
+    old_line: Optional[int] = None
+    new_line: Optional[int] = None
+    content: str = ""
+
+
+class DiffHunk(BaseModel):
+    """Contiguous changed region with surrounding context lines.
+
+    Attributes:
+        old_start: First 1-based line of the hunk in the old file.
+        old_lines: Number of old-file lines covered by the hunk.
+        new_start: First 1-based line of the hunk in the new file.
+        new_lines: Number of new-file lines covered by the hunk.
+        lines: Ordered context/add/remove lines.
+    """
+
+    old_start: int = 0
+    old_lines: int = 0
+    new_start: int = 0
+    new_lines: int = 0
+    lines: List[DiffLine] = Field(default_factory=list)
+
+
+class FileChangeDiff(BaseModel):
+    """Line-level diff for a single applied file change.
+
+    Attributes:
+        additions: Total added lines.
+        deletions: Total removed lines.
+        is_new_file: Whether the file did not exist before the change.
+        is_deleted: Whether the change removed the file.
+        truncated: Whether hunks were capped for very large diffs.
+        hunks: Rendered diff hunks (empty when truncated or unchanged).
+    """
+
+    additions: int = 0
+    deletions: int = 0
+    is_new_file: bool = False
+    is_deleted: bool = False
+    truncated: bool = False
+    hunks: List[DiffHunk] = Field(default_factory=list)
+
+
 class FileChangeProposal(BaseModel):
     """Proposed file modification from the AI.
 
@@ -31,11 +85,13 @@ class FileChangeProposal(BaseModel):
         path: Target file path.
         action: create, update, or delete.
         content: New content for create/update.
+        diff: Line-level diff, attached once the change is applied.
     """
 
     path: str
     action: str
     content: Optional[str] = None
+    diff: Optional[FileChangeDiff] = None
 
 
 class ChatMessageResponse(BaseModel):

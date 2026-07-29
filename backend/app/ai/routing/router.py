@@ -59,12 +59,21 @@ _LIGHT_PATTERNS = [
 ]
 
 _CODING_PATTERNS = [
-    r"\b(create|add|implement|generate|build|scaffold|write)\b",
+    r"\b(create|add|implement|generate|build|scaffold|write|include|enhance|improve)\b",
     r"\b(refactor|fix|bug|debug|optimise|optimize)\b",
     r"\b(update|modify|change|edit|delete|remove|rename file)\b",
     r"\b(fastapi|flask|react|mongodb|tailwind|endpoint|api)\b",
     r"\b(multi[- ]?file|across files|project|architecture|dependency)\b",
-    r"\b(landing page|website|portfolio|saas|restaurant)\b",
+    r"\b(landing page|website|portfolio|saas|restaurant|page|pages|cards?|section)\b",
+    r"\b(picture|pictures|image|images|photo|photos|gallery|hero|navbar|footer)\b",
+]
+
+# Website follow-ups that change UI/content (even if they also say "describe").
+_WEBSITE_EDIT_PATTERNS = [
+    r"\b(build|create|generate|make|design|include|add|update|enhance|improve|fix)\b",
+    r"\b(picture|pictures|image|images|photo|photos|cost|costs|price|card|cards)\b",
+    r"\b(page|pages|region|regions|section|layout|style|css|react|tsx|html|tailwind)\b",
+    r"\b(reference|like this|hungerstation|landing|hero|navbar|gallery)\b",
 ]
 
 
@@ -98,15 +107,20 @@ class RequestRouter:
 
         light_hit = any(re.search(p, text) for p in _LIGHT_PATTERNS)
         coding_hit = any(re.search(p, text) for p in _CODING_PATTERNS)
+        website_edit_hit = any(re.search(p, text) for p in _WEBSITE_EDIT_PATTERNS)
         long_request = len(text) > 280
         implies_edit = bool(
             re.search(r"\b(in|into|to)\s+[\w./-]+\.(js|ts|jsx|tsx|py|html|css)\b", text)
         ) or has_selection
 
+        # Website workspace: content/UI changes must use the Website Builder agent
+        # (file blocks). Do NOT demote to lightweight "explain" just because the
+        # user said "describe" while also asking to add cards/images/pages.
         if workspace == "website" and (
             coding_hit
-            or re.search(r"\b(build|create|generate|make|design)\b", text)
+            or website_edit_hit
             or long_request
+            or re.search(r"\b(build|create|generate|make|design)\b", text)
         ):
             return RoutingDecision(
                 category=RequestCategory.WEBSITE_BUILDER,
@@ -133,7 +147,7 @@ class RequestRouter:
                 tier=ModelTier.CODING,
                 model=coding_model,
                 temperature=0.2,
-                max_tokens=8192,
+                max_tokens=7000,
                 reason="code generation / multi-file edit",
             )
 
@@ -164,7 +178,7 @@ class RequestRouter:
             tier=ModelTier.CODING,
             model=coding_model,
             temperature=0.2,
-            max_tokens=6144,
+            max_tokens=8000,
             reason="default workspace coding agent",
         )
 

@@ -47,6 +47,11 @@ def test_create_reports_not_existed_before() -> None:
     assert reverse[0].existed_before is False
     assert reverse[0].previous_content is None
 
+    diff = applied[0].diff
+    assert diff is not None
+    assert diff.is_new_file is True
+    assert diff.additions == 1
+
 
 def test_update_captures_previous_content_for_undo() -> None:
     service = FakeFileService()
@@ -64,6 +69,10 @@ def test_update_captures_previous_content_for_undo() -> None:
     assert service.files["main.py"] == "print('new')\n"
     assert reverse[0].existed_before is True
     assert reverse[0].previous_content == "print('old')\n"
+
+    diff = applied[0].diff
+    assert diff is not None
+    assert (diff.additions, diff.deletions) == (1, 1)
 
     async def undo():
         for item in reverse:

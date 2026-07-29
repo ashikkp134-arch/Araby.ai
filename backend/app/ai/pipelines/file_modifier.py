@@ -6,7 +6,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.schemas.chat import FileChangeProposal
 from app.services.file_service import FileService
-from app.utils.exceptions import AppException
+from app.utils.diffing import build_file_diff
+from app.utils.exceptions import AppException, ValidationAppError
+from app.utils.workspace_file_policy import (
+    assert_path_editable,
+    edit_restriction_message,
+    is_path_editable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +45,33 @@ class ReverseChange:
         }
 
 
+def _with_diff(
+    change: FileChangeProposal,
+    *,
+    previous_content: Optional[str],
+    current_content: Optional[str],
+    existed_before: bool,
+) -> FileChangeProposal:
+    """Return a copy of an applied change carrying its line-level diff.
+
+    Args:
+        change: Proposal that was just applied.
+        previous_content: Content before the change.
+        current_content: Content after the change (None for deletes).
+        existed_before: Whether the file existed before the change.
+
+    Returns:
+        Copy of the proposal with ``diff`` populated.
+    """
+    diff = build_file_diff(
+        action=change.action,
+        previous_content=previous_content,
+        current_content=current_content,
+        existed_before=existed_before,
+    )
+    return change.model_copy(update={"diff": diff})
+
+
 class FileModifier:
     """Apply validated file change proposals to a project."""
 
@@ -54,20 +87,43 @@ class FileModifier:
         self,
         project_id: str,
         changes: List[FileChangeProposal],
+        *,
+        workspace_type: str = "",
     ) -> Tuple[List[FileChangeProposal], List[ReverseChange]]:
         """Apply a list of file changes, capturing how to revert them.
 
         Args:
             project_id: Target project id.
             changes: Proposed changes.
+            workspace_type: Project workspace type for edit-policy checks.
 
         Returns:
             Tuple of (successfully applied changes, reverse changes for undo).
+
+        Raises:
+            ValidationAppError: When any change targets a disallowed file type.
         """
+        blocked = [
+            change.path
+            for change in changes
+            if change.path and not is_path_editable(workspace_type, change.path)
+        ]
+        if blocked:
+            raise ValidationAppError(
+                edit_restriction_message(workspace_type),
+                details={
+                    "workspace_type": (workspace_type or "").lower().strip(),
+                    "blocked_paths": blocked,
+                    "error_code": "workspace_file_type_restricted",
+                },
+            )
+
         applied: List[FileChangeProposal] = []
         reverse: List[ReverseChange] = []
         for change in changes:
             try:
+                # Belt-and-suspenders: also enforce per path (apply_path_content does too).
+                assert_path_editable(workspace_type, change.path)
                 previous_content = await self._files.get_raw_content_by_path(
                     project_id,
                     change.path,
@@ -81,7 +137,14 @@ class FileModifier:
                         content=change.content or "",
                         create_if_missing=True,
                     )
-                    applied.append(change)
+                    applied.append(
+                        _with_diff(
+                            change,
+                            previous_content=previous_content,
+                            current_content=change.content or "",
+                            existed_before=existed_before,
+                        )
+                    )
                     reverse.append(
                         ReverseChange(
                             path=change.path,
@@ -93,7 +156,14 @@ class FileModifier:
                     if not existed_before:
                         continue
                     await self._files.delete_by_path(project_id, change.path)
-                    applied.append(change)
+                    applied.append(
+                        _with_diff(
+                            change,
+                            previous_content=previous_content,
+                            current_content=None,
+                            existed_before=True,
+                        )
+                    )
                     reverse.append(
                         ReverseChange(
                             path=change.path,
@@ -101,6 +171,8 @@ class FileModifier:
                             previous_content=previous_content,
                         )
                     )
+            except ValidationAppError:
+                raise
             except AppException as exc:
                 logger.warning(
                     "Failed to apply change %s %s: %s",

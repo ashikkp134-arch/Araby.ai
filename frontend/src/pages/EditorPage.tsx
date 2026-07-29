@@ -5,7 +5,7 @@ import { CodeEditor } from '@/components/editor/CodeEditor';
 import { LivePreview } from '@/components/editor/LivePreview';
 import { ChatPanel } from '@/components/chat/ChatPanel';
 import { Button } from '@/components/common/Button';
-import { Spinner } from '@/components/common/Modal';
+import { Spinner, ValidationModal } from '@/components/common/Modal';
 import { useProjectEditor } from '@/hooks/useProjectEditor';
 import { useUiStore } from '@/stores/uiStore';
 
@@ -101,12 +101,20 @@ export function EditorPage() {
                 files={editor.previewTab.files}
                 onRefresh={() => void editor.handleOpenPreview()}
                 refreshing={editor.previewTab.loading}
+                repairing={
+                  editor.previewRepairing ||
+                  (editor.chatPending &&
+                    /auto-repairing live preview/i.test(editor.streamingContent || ''))
+                }
+                onPreviewError={editor.handlePreviewError}
               />
             ) : (
               <CodeEditor
                 tab={editor.activeTab}
+                editable={editor.activeFileEditable}
+                onReadonlyEditAttempt={editor.showWorkspaceRestriction}
                 onChange={(value) => {
-                  if (editor.activeTab) {
+                  if (editor.activeTab && editor.activeFileEditable) {
                     editor.updateContent(editor.activeTab.id, value);
                   }
                 }}
@@ -125,14 +133,23 @@ export function EditorPage() {
             onSend={editor.handleSendChat}
             onCancel={editor.handleCancelChat}
             appliedChangesCount={editor.lastChangeSet?.file_changes.length ?? 0}
+            appliedChangesMessageId={editor.lastChangeSet?.id}
             canUndo={editor.canUndo}
             undoPending={editor.undoPending}
             onUndo={() => void editor.handleUndoLastChanges()}
+            onOpenFile={(path) => void editor.handleOpenFilePath(path)}
           />
         ) : (
           <div className="hidden lg:block" />
         )}
       </div>
+
+      {editor.restrictionMessage ? (
+        <ValidationModal
+          message={editor.restrictionMessage}
+          onClose={editor.clearWorkspaceRestriction}
+        />
+      ) : null}
     </div>
   );
 }

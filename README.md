@@ -25,9 +25,11 @@ Router → Request Router (light vs coding) → Workspace System Prompt
       → Context Builder → LLM (stream/complete) → Response Parser → File Modifier
 ```
 
-Hybrid routing uses `OPENAI_MODEL_LIGHT` for explanations/docs and `OPENAI_MODEL_CODING`
-for multi-file edits and generation (both fall back to `OPENAI_MODEL`). Chat streams over
-`/ws/chat/{project_id}` with structured ```file path=… action=…``` blocks applied automatically.
+Hybrid routing uses `OPENAI_MODEL_LIGHT` (default `gpt-4o-mini`) for explanations/docs
+and `OPENAI_MODEL_CODING` (default `gpt-4o`) for website generation, multi-file edits,
+and automatic preview repairs. Both fall back to `OPENAI_MODEL` when explicitly left
+empty. Chat streams over `/ws/chat/{project_id}` with structured
+```file path=… action=…``` blocks applied automatically.
 
 ## Prerequisites
 
@@ -138,8 +140,8 @@ App: [http://localhost:5173](http://localhost:5173)
 | `JWT_REFRESH_SECRET` | Refresh token signing secret (min 32 chars) |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `OPENAI_MODEL` | Default / fallback model (default `gpt-4o-mini`) |
-| `OPENAI_MODEL_LIGHT` | Fast model for explanations/docs (optional) |
-| `OPENAI_MODEL_CODING` | Stronger model for generation/edits (optional) |
+| `OPENAI_MODEL_LIGHT` | Fast model for explanations/docs (default `gpt-4o-mini`) |
+| `OPENAI_MODEL_CODING` | Stronger model for website generation, edits, and preview repair (default `gpt-4o`) |
 | `OPENAI_BASE_URL` | Optional OpenAI-compatible base URL (empty = OpenAI) |
 | `LLM_PROVIDER` | Provider key (`openai`, stubs for others) |
 | `ACCESS_TOKEN_EXPIRE` | Access token lifetime in minutes |

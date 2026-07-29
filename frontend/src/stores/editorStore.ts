@@ -9,6 +9,7 @@ interface EditorState {
   setActiveTab: (tabId: string) => void;
   updateContent: (tabId: string, content: string) => void;
   markSaved: (tabId: string, content: string) => void;
+  syncTab: (tabId: string, next: EditorTab) => void;
   replaceTabMeta: (tabId: string, patch: Partial<EditorTab>) => void;
   reset: () => void;
 }
@@ -20,7 +21,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   openTab: (tab) => {
     const existing = get().tabs.find((item) => item.id === tab.id);
     if (existing) {
-      set({ activeTabId: existing.id });
+      // Adopt the freshly loaded content unless the user has unsaved edits.
+      set((state) => ({
+        tabs: state.tabs.map((item) =>
+          item.id === tab.id && !item.dirty ? { ...item, ...tab } : item,
+        ),
+        activeTabId: existing.id,
+      }));
       return;
     }
     set((state) => ({
@@ -53,6 +60,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       tabs: state.tabs.map((tab) =>
         tab.id === tabId ? { ...tab, content, dirty: false } : tab,
       ),
+    }));
+  },
+
+  syncTab: (tabId, next) => {
+    set((state) => ({
+      tabs: state.tabs.map((tab) => (tab.id === tabId ? next : tab)),
+      activeTabId: state.activeTabId === tabId ? next.id : state.activeTabId,
     }));
   },
 

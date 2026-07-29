@@ -71,10 +71,37 @@ export interface ProjectFile {
   created_at: string;
 }
 
+export type DiffLineType = 'context' | 'add' | 'remove';
+
+export interface DiffLine {
+  type: DiffLineType;
+  old_line?: number | null;
+  new_line?: number | null;
+  content: string;
+}
+
+export interface DiffHunk {
+  old_start: number;
+  old_lines: number;
+  new_start: number;
+  new_lines: number;
+  lines: DiffLine[];
+}
+
+export interface FileChangeDiff {
+  additions: number;
+  deletions: number;
+  is_new_file: boolean;
+  is_deleted: boolean;
+  truncated: boolean;
+  hunks: DiffHunk[];
+}
+
 export interface FileChangeProposal {
   path: string;
   action: string;
   content?: string | null;
+  diff?: FileChangeDiff | null;
 }
 
 export interface ChatMessage {

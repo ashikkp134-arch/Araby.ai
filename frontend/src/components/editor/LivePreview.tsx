@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as esbuild from 'esbuild-wasm';
 import esbuildWasmUrl from 'esbuild-wasm/esbuild.wasm?url';
 import type { ProjectFile } from '@/types';
 import { Button } from '@/components/common/Button';
+import { cn } from '@/utils/helpers';
 
 const SCRIPT_END = /<\/script/gi;
 const REACT_ENTRY_PATHS = [
@@ -15,7 +16,21 @@ const REACT_ENTRY_PATHS = [
   'src/main.ts',
   'src/index.ts',
 ];
+const REACT_APP_PATHS = [
+  'src/App.tsx',
+  'src/App.jsx',
+  'App.tsx',
+  'App.jsx',
+];
+const VIRTUAL_REACT_ENTRY = '__araby_preview_entry__.tsx';
 const SOURCE_EXTENSIONS = ['', '.tsx', '.ts', '.jsx', '.js', '.css', '.json'];
+/**
+ * CSS `url()` and `@import` targets are browser requests, not source modules.
+ * Routing them through the module loader makes esbuild fail the whole bundle
+ * ("NetworkError when attempting to fetch resource" / "Cannot use ... as a URL")
+ * because of one image reference, so they must stay external.
+ */
+const ASSET_RESOLVE_KINDS = new Set<esbuild.ImportKind>(['url-token', 'import-rule']);
 const CDN_PACKAGE_VERSIONS: Record<string, string> = {
   react: '18.3.1',
   'react-dom': '18.3.1',
@@ -60,6 +75,16 @@ interface LivePreviewProps {
   files: ProjectFile[];
   onRefresh?: () => void;
   refreshing?: boolean;
+  /** True while background auto-repair / regenerate is in flight. */
+  repairing?: boolean;
+  /** Called when compile or runtime preview fails (e.g. missing imports). */
+  onPreviewError?: (error: PreviewErrorInfo) => void;
+}
+
+export interface PreviewErrorInfo {
+  kind: 'compile' | 'runtime';
+  message: string;
+  missingModule?: string;
 }
 
 /**
@@ -67,12 +92,21 @@ interface LivePreviewProps {
  * Static HTML/CSS/JS projects render directly; React/TS projects are
  * compiled in-browser with esbuild-wasm into a self-contained bundle.
  */
-export function LivePreview({ files, onRefresh, refreshing }: LivePreviewProps) {
+export function LivePreview({
+  files,
+  onRefresh,
+  refreshing,
+  repairing = false,
+  onPreviewError,
+}: LivePreviewProps) {
   const staticDocument = useMemo(() => buildStaticPreviewDocument(files), [files]);
   const [documentHtml, setDocumentHtml] = useState(staticDocument);
   const [iframeSrc, setIframeSrc] = useState<string>();
   const [status, setStatus] = useState('Live Preview');
   const [compiling, setCompiling] = useState(false);
+  const [lastError, setLastError] = useState<PreviewErrorInfo>();
+  const onPreviewErrorRef = useRef(onPreviewError);
+  onPreviewErrorRef.current = onPreviewError;
 
   useEffect(() => {
     let cancelled = false;
@@ -82,6 +116,7 @@ export function LivePreview({ files, onRefresh, refreshing }: LivePreviewProps) 
       setDocumentHtml(staticDocument);
       setStatus('Live Preview');
       setCompiling(false);
+      setLastError(undefined);
       return () => {
         cancelled = true;
       };
@@ -95,12 +130,23 @@ export function LivePreview({ files, onRefresh, refreshing }: LivePreviewProps) 
         if (!cancelled) {
           setDocumentHtml(html);
           setStatus('Live Preview');
+          setLastError(undefined);
         }
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setDocumentHtml(buildPreviewErrorDocument(error));
-          setStatus('Preview error');
+          const message =
+            error instanceof Error ? error.message : 'Unknown preview compilation error';
+          // Keep a blank dark shell while auto-repair runs instead of an error page.
+          setDocumentHtml(buildPreviewLoadingDocument());
+          setStatus('Repairing preview…');
+          const info: PreviewErrorInfo = {
+            kind: 'compile',
+            message,
+            missingModule: extractMissingModule(message),
+          };
+          setLastError(info);
+          onPreviewErrorRef.current?.(info);
         }
       })
       .finally(() => {
@@ -125,6 +171,37 @@ export function LivePreview({ files, onRefresh, refreshing }: LivePreviewProps) 
     };
   }, [documentHtml]);
 
+  useEffect(() => {
+    function onMessage(event: MessageEvent) {
+      const data = event.data;
+      if (!data || data.source !== 'araby-live-preview' || data.type !== 'runtime-error') {
+        return;
+      }
+      const message = String(data.message || 'Preview runtime error');
+      // Swap to a blank loading shell; parent shows the motion buffer while repairing.
+      setDocumentHtml(buildPreviewLoadingDocument());
+      setStatus('Repairing preview…');
+      const info: PreviewErrorInfo = {
+        kind: 'runtime',
+        message,
+        missingModule: extractMissingModule(message),
+      };
+      setLastError(info);
+      onPreviewErrorRef.current?.(info);
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  // If automatic repair finishes or exhausts its retries while the same error
+  // remains, show the actual diagnostic instead of leaving a permanent black pane.
+  useEffect(() => {
+    if (!repairing && lastError && status === 'Repairing preview…') {
+      setDocumentHtml(buildPreviewErrorDocument(lastError));
+      setStatus('Preview error');
+    }
+  }, [lastError, repairing, status]);
+
   function handleOpenInNewTab() {
     // Dedicated blob so the tab keeps working even if the iframe preview refreshes.
     const blob = new Blob([documentHtml], { type: 'text/html' });
@@ -135,39 +212,115 @@ export function LivePreview({ files, onRefresh, refreshing }: LivePreviewProps) 
     }
   }
 
+  const showLoader = repairing || compiling || Boolean(refreshing);
+
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white">
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-700">
-        <span>{status}</span>
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-black">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 bg-slate-950 px-4 py-2 text-sm font-medium text-slate-200">
+        <span>{showLoader ? 'Loading…' : status}</span>
         <div className="flex shrink-0 items-center gap-2">
           <Button
             size="sm"
             variant="secondary"
             onClick={handleOpenInNewTab}
-            disabled={compiling || !documentHtml}
+            disabled={showLoader || !documentHtml}
           >
             Open in new tab
           </Button>
           {onRefresh ? (
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={onRefresh}
-              disabled={refreshing || compiling}
-            >
+            <Button size="sm" variant="secondary" onClick={onRefresh} disabled={showLoader}>
               {refreshing ? 'Refreshing…' : 'Refresh preview'}
             </Button>
           ) : null}
         </div>
       </div>
-      <iframe
-        title="Website preview"
-        className="min-h-0 flex-1 bg-slate-950"
-        sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"
-        src={iframeSrc}
-      />
+      <div className="relative min-h-0 flex-1 bg-black">
+        <iframe
+          title="Website preview"
+          className={cn(
+            'h-full min-h-0 w-full bg-black',
+            showLoader ? 'invisible' : 'visible',
+          )}
+          sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"
+          src={iframeSrc}
+        />
+        {showLoader ? <PreviewLoadingOverlay /> : null}
+      </div>
     </div>
   );
+}
+
+function extractMissingModule(message: string): string | undefined {
+  const match = message.match(/Missing module\s+"([^"]+)"/i);
+  return match?.[1];
+}
+
+/**
+ * Full-pane motion buffer matching a classic dotted spinner + "Loading.." label.
+ */
+function PreviewLoadingOverlay() {
+  const dots = Array.from({ length: 12 }, (_, index) => index);
+  return (
+    <div
+      className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black"
+      role="status"
+      aria-live="polite"
+      aria-label="Loading preview"
+    >
+      <div
+        className="relative h-14 w-14"
+        style={{ animation: 'preview-spinner-rotate 1s linear infinite' }}
+      >
+        {dots.map((index) => {
+          const angle = (index / dots.length) * 360;
+          const opacity = 0.15 + (index / (dots.length - 1)) * 0.85;
+          return (
+            <span
+              key={index}
+              className="absolute left-1/2 top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white"
+              style={{
+                opacity,
+                transform: `rotate(${angle}deg) translateY(-22px)`,
+              }}
+            />
+          );
+        })}
+      </div>
+      <p className="mt-5 text-sm font-medium tracking-wide text-white">Loading..</p>
+      <style>{`
+        @keyframes preview-spinner-rotate {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+function buildPreviewLoadingDocument(): string {
+  return `<!doctype html><html><body style="margin:0;background:#000"></body></html>`;
+}
+
+function buildPreviewErrorDocument(error: PreviewErrorInfo): string {
+  const title = error.kind === 'compile' ? 'Preview compilation failed' : 'Preview crashed';
+  const message = escapeHtml(error.message || 'Unknown preview error');
+  return `<!doctype html>
+<html>
+  <body style="margin:0;min-height:100vh;background:#020617;color:#e2e8f0;font:15px/1.6 system-ui;padding:32px;box-sizing:border-box">
+    <h1 style="margin:0 0 8px;color:#f87171;font-size:22px">${title}</h1>
+    <p style="margin:0 0 16px;color:#94a3b8">Automatic repair could not resolve this issue.</p>
+    <pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:#0f172a;border:1px solid #334155;border-radius:10px;padding:16px;color:#fda4af">${message}</pre>
+  </body>
+</html>`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 /**
@@ -214,7 +367,18 @@ function buildStaticPreviewDocument(files: ProjectFile[]): string {
 
 function findReactEntry(files: ProjectFile[]): string | undefined {
   const paths = new Set(files.map((file) => normalizePath(file.path)));
-  return REACT_ENTRY_PATHS.find((path) => paths.has(path));
+  const conventionalEntry = REACT_ENTRY_PATHS.find((path) => paths.has(path));
+  if (conventionalEntry) {
+    return conventionalEntry;
+  }
+
+  // Generated projects occasionally contain a complete App component but omit
+  // main.tsx/index.tsx. Compiling App directly succeeds without mounting it,
+  // which produces a misleading blank white preview. A virtual entry keeps the
+  // preview useful while the backend integrity repair creates the real entry.
+  return REACT_APP_PATHS.some((path) => paths.has(path))
+    ? VIRTUAL_REACT_ENTRY
+    : undefined;
 }
 
 /**
@@ -229,6 +393,25 @@ async function buildReactPreviewDocument(
   const sourceByPath = new Map(
     files.map((file) => [normalizePath(file.path), file.content] as const),
   );
+  if (entry === VIRTUAL_REACT_ENTRY) {
+    const appPath = REACT_APP_PATHS.find((path) => sourceByPath.has(path));
+    if (!appPath) {
+      throw new Error(
+        'React App component was detected but could not be resolved for Live Preview.',
+      );
+    }
+    sourceByPath.set(
+      VIRTUAL_REACT_ENTRY,
+      [
+        "import React from 'react';",
+        "import { createRoot } from 'react-dom/client';",
+        `import App from ${JSON.stringify(`./${appPath}`)};`,
+        "const root = document.getElementById('root');",
+        "if (!root) throw new Error('Live Preview could not find the #root element.');",
+        'createRoot(root).render(React.createElement(App));',
+      ].join('\n'),
+    );
+  }
 
   const result = await esbuild.build({
     entryPoints: [entry],
@@ -246,10 +429,15 @@ async function buildReactPreviewDocument(
       {
         name: 'workspace-and-cdn',
         setup(build) {
-          build.onResolve({ filter: /^https?:\/\// }, (args) => ({
-            path: pinEsmShUrl(args.path),
-            namespace: 'http-url',
-          }));
+          build.onResolve({ filter: /^https?:\/\// }, (args) => {
+            if (ASSET_RESOLVE_KINDS.has(args.kind)) {
+              return { path: args.path, external: true };
+            }
+            return {
+              path: pinEsmShUrl(args.path),
+              namespace: 'http-url',
+            };
+          });
 
           build.onResolve({ filter: /.*/, namespace: 'http-url' }, (args) => {
             // Bare imports inside CDN modules must not be treated as relative paths.
@@ -289,6 +477,9 @@ async function buildReactPreviewDocument(
             );
             if (resolved) {
               return { path: resolved, namespace: 'workspace' };
+            }
+            if (ASSET_RESOLVE_KINDS.has(args.kind)) {
+              return { path: args.path, external: true };
             }
             return {
               path: args.path,
@@ -362,6 +553,12 @@ function showPreviewCrash(reason) {
   } else {
     message = String(reason || 'Unknown runtime error');
   }
+  try {
+    parent.postMessage(
+      { source: 'araby-live-preview', type: 'runtime-error', message: message },
+      '*'
+    );
+  } catch (e) {}
   var root = document.getElementById('root');
   if (!root) return;
   root.innerHTML = '<div style="margin:0;padding:32px;font:15px/1.6 system-ui;background:#020617;color:#e2e8f0;min-height:100vh"><h1 style="color:#f87171;margin:0 0 8px">Preview runtime error</h1><p style="margin:0 0 16px;color:#94a3b8">The React app compiled, but crashed while starting.</p><pre style="white-space:pre-wrap;background:#0f172a;padding:16px;border-radius:8px;color:#fda4af;margin:0"></pre></div>';
@@ -484,18 +681,4 @@ function adaptSourceForPreview(content: string, path: string): string {
     .replace(/\bcreateHashRouter\b/g, 'createMemoryRouter')
     .replace(/\bBrowserRouter\b/g, 'MemoryRouter')
     .replace(/\bHashRouter\b/g, 'MemoryRouter');
-}
-
-function buildPreviewErrorDocument(error: unknown): string {
-  const message = error instanceof Error ? error.message : 'Unknown preview compilation error';
-  const escaped = message
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-  return `<!doctype html><html><body style="margin:0;background:#020617;color:#e2e8f0;font:15px/1.6 system-ui;padding:32px">
-    <h1 style="color:#f8fafc">Preview could not compile</h1>
-    <p>The generated React/TypeScript files failed while building the live preview bundle.</p>
-    <pre style="white-space:pre-wrap;background:#0f172a;padding:16px;border-radius:8px;color:#fda4af">${escaped}</pre>
-  </body></html>`;
 }

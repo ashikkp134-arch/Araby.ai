@@ -11,13 +11,29 @@ from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
 from opentelemetry import trace
 
 from app.ai.context.builder import ContextBuilder, ProjectContext
-from app.ai.guardrails import GuardResult, check_input, check_output, message_fingerprint
+from app.ai.guardrails import (
+    RESPONSIBLE_AI_MESSAGE,
+    GuardResult,
+    check_input,
+    check_output,
+    check_sensitive_data_request,
+    message_fingerprint,
+    sanitize_user_input,
+)
 from app.ai.pipelines.file_modifier import FileModifier
+from app.ai.pipelines.image_discovery import ImageAssetResolver, ImageDiscoveryResult
+from app.ai.pipelines.preview_integrity import (
+    IntegrityIssue,
+    build_exhausted_user_message,
+    build_repair_prompt,
+    find_asset_usage_issues,
+    find_integrity_issues,
+)
 from app.ai.pipelines.response_parser import ResponseParser
 from app.ai.prompts.builder import PromptBuilder
 from app.ai.providers.base import LLMMessage, LLMProvider
 from app.ai.providers.factory import get_llm_provider
-from app.ai.routing import RequestRouter, RoutingDecision
+from app.ai.routing import RequestCategory, RequestRouter, RoutingDecision
 from app.core.config import get_settings
 from app.core.redis import RedisCache
 from app.core.telemetry import get_tracer, record_exception, set_span_attrs
@@ -26,8 +42,9 @@ from app.repositories.file_repository import FileRepository, FolderRepository
 from app.schemas.chat import ChatCompletionResponse, ChatMessageResponse, FileChangeProposal
 from app.services.file_service import FileService
 from app.services.project_service import ProjectService
-from app.utils.exceptions import AppException
+from app.utils.exceptions import AppException, ValidationAppError
 from app.utils.object_id import parse_object_id
+from app.utils.workspace_file_policy import edit_restriction_message
 
 logger = logging.getLogger(__name__)
 tracer = get_tracer("app.ai.pipeline")
@@ -60,6 +77,7 @@ class PreparedTurn:
     apply_changes: bool = True
     input_guard: Optional[GuardResult] = None
     message_hash: str = ""
+    image_discovery: Optional[ImageDiscoveryResult] = None
 
 
 @dataclass
@@ -194,6 +212,7 @@ class AIPipeline:
         self._parser = ResponseParser()
         self._modifier = FileModifier(file_service)
         self._router = RequestRouter()
+        self._image_resolver = ImageAssetResolver()
 
     async def run(
         self,
@@ -231,6 +250,15 @@ class AIPipeline:
                 },
             )
             try:
+                responsible_ai = self._responsible_ai_block(content)
+                if responsible_ai is not None:
+                    set_span_attrs(span, responsible_ai.to_metadata("responsible_ai"))
+                    return await self._refuse_sensitive_turn(
+                        user_id,
+                        project_id,
+                        content,
+                        responsible_ai,
+                    )
                 prepared = await self._prepare_turn(
                     user_id=user_id,
                     project_id=project_id,
@@ -290,7 +318,7 @@ class AIPipeline:
                             "latency_ms": latency_ms,
                         },
                     )
-                    return await self._finalize_turn(
+                    completion = await self._finalize_turn(
                         prepared=prepared,
                         raw_content=llm_response.content,
                         model=llm_response.model,
@@ -298,6 +326,10 @@ class AIPipeline:
                         completion_tokens=llm_response.completion_tokens,
                         total_tokens=llm_response.total_tokens,
                         latency_ms=latency_ms,
+                    )
+                    return await self._apply_preview_repairs(
+                        prepared=prepared,
+                        completion=completion,
                     )
             except Exception as exc:
                 record_exception(span, exc)
@@ -339,6 +371,28 @@ class AIPipeline:
                 },
             )
             try:
+                responsible_ai = self._responsible_ai_block(content)
+                if responsible_ai is not None:
+                    set_span_attrs(span, responsible_ai.to_metadata("responsible_ai"))
+                    refusal = await self._refuse_sensitive_turn(
+                        user_id,
+                        project_id,
+                        content,
+                        responsible_ai,
+                    )
+                    yield StreamEvent(type="start", metadata=refusal.metadata)
+                    yield StreamEvent(
+                        type="delta",
+                        content=refusal.assistant_message.content,
+                    )
+                    yield StreamEvent(
+                        type="done",
+                        content=refusal.assistant_message.content,
+                        metadata=refusal.metadata,
+                        assistant_message=refusal.assistant_message.model_dump(mode="json"),
+                        user_message=refusal.user_message.model_dump(mode="json"),
+                    )
+                    return
                 prepared = await self._prepare_turn(
                     user_id=user_id,
                     project_id=project_id,
@@ -444,14 +498,69 @@ class AIPipeline:
                 total_tokens=total_tokens,
                 latency_ms=latency_ms,
             )
-            yield StreamEvent(
-                type="done",
-                content=completion.assistant_message.content,
-                file_changes=completion.applied_changes,
-                metadata=completion.metadata,
-                assistant_message=completion.assistant_message.model_dump(mode="json"),
-                user_message=completion.user_message.model_dump(mode="json"),
-            )
+            async for event in self._stream_preview_repairs(prepared, completion):
+                yield event
+
+    def _responsible_ai_block(self, content: str) -> Optional[GuardResult]:
+        """Return the guard result when a turn targets credentials or PII.
+
+        Args:
+            content: Raw user message.
+
+        Returns:
+            Blocking GuardResult, or None when the request may proceed.
+        """
+        if not get_settings().guardrails_enabled:
+            return None
+        result = check_sensitive_data_request(content)
+        return None if result.allowed else result
+
+    async def _refuse_sensitive_turn(
+        self,
+        user_id: str,
+        project_id: str,
+        content: str,
+        guard: GuardResult,
+    ) -> ChatCompletionResponse:
+        """Persist a refusal turn for a credentials/PII request without an LLM call.
+
+        Args:
+            user_id: Authenticated user id.
+            project_id: Project id.
+            content: Raw user message.
+            guard: Blocking guard result.
+
+        Returns:
+            ChatCompletionResponse holding the refusal and no file changes.
+        """
+        await self._projects.ensure_owned(user_id, project_id)
+        project_oid = parse_object_id(project_id, "project_id")
+        session = await self._chat.get_or_create_session(
+            project_oid,
+            parse_object_id(user_id, "user_id"),
+        )
+        session_oid = parse_object_id(session["id"], "session_id")
+        refusal = guard.reason or RESPONSIBLE_AI_MESSAGE
+
+        user_message = await self._chat.add_message(
+            session_id=session_oid,
+            project_id=project_oid,
+            role="user",
+            content=guard.sanitized_text or sanitize_user_input(content),
+        )
+        assistant_message = await self._chat.add_message(
+            session_id=session_oid,
+            project_id=project_oid,
+            role="assistant",
+            content=refusal,
+        )
+        logger.info("Responsible-AI refusal for project=%s", project_id)
+        return ChatCompletionResponse(
+            user_message=ChatMessageResponse(**user_message),
+            assistant_message=ChatMessageResponse(**assistant_message),
+            applied_changes=[],
+            metadata=guard.to_metadata("responsible_ai"),
+        )
 
     def _run_input_guard(self, content: str) -> GuardResult:
         """Evaluate input guardrails according to settings.
@@ -467,7 +576,11 @@ class AIPipeline:
         """
         settings = get_settings()
         if not settings.guardrails_enabled:
-            return GuardResult(allowed=True, reason="guardrails_disabled")
+            return GuardResult(
+                allowed=True,
+                reason="guardrails_disabled",
+                sanitized_text=sanitize_user_input(content),
+            )
         result = check_input(content)
         if not result.allowed and settings.guardrails_block_on_input:
             raise AppException(
@@ -504,7 +617,13 @@ class AIPipeline:
         """
         with tracer.start_as_current_span("ai.prepare_turn") as span:
             input_guard = self._run_input_guard(content)
-            msg_hash = message_fingerprint(content)
+            # Prefer sanitized text for persistence, hashing, routing, and prompts.
+            safe_content = (
+                input_guard.sanitized_text
+                if input_guard.sanitized_text is not None
+                else content
+            )
+            msg_hash = message_fingerprint(safe_content)
             set_span_attrs(
                 span,
                 {
@@ -525,7 +644,7 @@ class AIPipeline:
                 session_id=session_oid,
                 project_id=project_oid,
                 role="user",
-                content=content,
+                content=safe_content,
             )
 
             files = await self._files.list_for_project(project_oid)
@@ -538,7 +657,7 @@ class AIPipeline:
             workspace_type = str(project.get("workspace_type") or "javascript")
             with tracer.start_as_current_span("ai.route"):
                 routing = self._router.classify(
-                    content,
+                    safe_content,
                     workspace_type,
                     has_selection=bool(selected_code),
                     open_tab_count=len(tabs),
@@ -554,6 +673,7 @@ class AIPipeline:
                     selected_code=selected_code,
                     recent_paths=recent_paths,
                     open_tabs=tabs,
+                    user_request=safe_content,
                 )
                 set_span_attrs(
                     ctx_span,
@@ -563,11 +683,38 @@ class AIPipeline:
                     },
                 )
 
+            image_discovery: Optional[ImageDiscoveryResult] = None
+            if workspace_type == "website" or routing.category == RequestCategory.WEBSITE_BUILDER:
+                with tracer.start_as_current_span("ai.image_discovery") as img_span:
+                    prior_user_requirements = [
+                        str(item.get("content") or "")
+                        for item in context.chat_history[-8:]
+                        if str(item.get("role") or "").lower() == "user"
+                    ]
+                    semantic_context = "\n".join(prior_user_requirements)[-6000:]
+                    image_discovery = await self._image_resolver.discover(
+                        safe_content,
+                        semantic_context=semantic_context,
+                    )
+                    set_span_attrs(
+                        img_span,
+                        {
+                            "image.discovery.required": image_discovery.required,
+                            "image.discovery.domain": image_discovery.domain,
+                            "image.discovery.asset_roles": len(image_discovery.assets),
+                            "image.discovery.url_count": image_discovery.url_count,
+                            "image.discovery.providers": ",".join(
+                                image_discovery.providers_used
+                            ),
+                        },
+                    )
+
             with tracer.start_as_current_span("ai.prompt.build"):
                 messages = self._prompt_builder.build(
                     context,
-                    content,
+                    safe_content,
                     category=routing.category,
+                    image_discovery=image_discovery,
                 )
 
             return PreparedTurn(
@@ -581,6 +728,7 @@ class AIPipeline:
                 apply_changes=apply_changes,
                 input_guard=input_guard,
                 message_hash=msg_hash,
+                image_discovery=image_discovery,
             )
 
     async def _finalize_turn(
@@ -627,8 +775,12 @@ class AIPipeline:
                 and settings.guardrails_block_on_output
             ):
                 assistant_content = (
-                    "I couldn't apply those changes because the response failed "
-                    "output safety checks. Please rephrase your request."
+                    RESPONSIBLE_AI_MESSAGE
+                    if "secret_leak" in output_guard.labels
+                    else (
+                        "I couldn't apply those changes because the response failed "
+                        "output safety checks. Please rephrase your request."
+                    )
                 )
                 set_span_attrs(span, {"guardrail.output.blocked": True})
                 logger.warning(
@@ -638,11 +790,32 @@ class AIPipeline:
                 )
             elif prepared.apply_changes and parsed.file_changes:
                 with tracer.start_as_current_span("ai.file_apply"):
-                    applied, reverse = await self._modifier.apply(
-                        prepared.project_id,
-                        parsed.file_changes,
-                    )
-                    reverse_changes = [item.to_dict() for item in reverse]
+                    workspace_type = str(prepared.project.get("workspace_type") or "")
+                    try:
+                        applied, reverse = await self._modifier.apply(
+                            prepared.project_id,
+                            parsed.file_changes,
+                            workspace_type=workspace_type,
+                        )
+                        reverse_changes = [item.to_dict() for item in reverse]
+                    except ValidationAppError as exc:
+                        applied = []
+                        reverse_changes = []
+                        assistant_content = exc.message or edit_restriction_message(
+                            workspace_type
+                        )
+                        set_span_attrs(
+                            span,
+                            {
+                                "workspace.file_type.blocked": True,
+                                "workspace.type": workspace_type,
+                            },
+                        )
+                        logger.info(
+                            "Workspace file-type policy blocked AI edits project=%s workspace=%s",
+                            prepared.project_id,
+                            workspace_type,
+                        )
 
             tokens_for_store = total_tokens or (prompt_tokens + completion_tokens) or None
             assistant_message = await self._chat.add_message(
@@ -685,6 +858,14 @@ class AIPipeline:
                 "routing_reason": prepared.routing.reason,
                 "input_hash": prepared.message_hash,
             }
+            if prepared.image_discovery is not None:
+                metadata["image_discovery_required"] = prepared.image_discovery.required
+                metadata["image_discovery_domain"] = prepared.image_discovery.domain
+                metadata["image_discovery_roles"] = list(prepared.image_discovery.assets.keys())
+                metadata["image_discovery_url_count"] = prepared.image_discovery.url_count
+                metadata["image_discovery_providers"] = list(
+                    prepared.image_discovery.providers_used
+                )
             if prepared.input_guard:
                 metadata.update(prepared.input_guard.to_metadata("input"))
             metadata.update(output_guard.to_metadata("output"))
@@ -702,4 +883,274 @@ class AIPipeline:
                 assistant_message=ChatMessageResponse(**assistant_message),
                 applied_changes=applied,
                 metadata=metadata,
+            )
+
+    def _should_check_preview_integrity(self, prepared: PreparedTurn) -> bool:
+        """Whether this turn should run Live Preview import integrity checks."""
+        if not prepared.apply_changes:
+            return False
+        workspace = str(prepared.project.get("workspace_type") or "").lower()
+        if workspace == "website":
+            return True
+        return prepared.routing.category == RequestCategory.WEBSITE_BUILDER
+
+    async def _load_integrity_issues(
+        self,
+        project_id: str,
+        image_discovery: Optional[ImageDiscoveryResult] = None,
+    ) -> List[IntegrityIssue]:
+        """Load project files and return preview/content integrity issues."""
+        project_oid = parse_object_id(project_id, "project_id")
+        files = await self._files.list_for_project(project_oid)
+        issues = find_integrity_issues(files)
+        if image_discovery is not None and image_discovery.required:
+            issues.extend(
+                find_asset_usage_issues(
+                    files,
+                    image_discovery.assets,
+                    asset_subjects=image_discovery.asset_subjects,
+                )
+            )
+        return issues
+
+    async def _apply_preview_repairs(
+        self,
+        *,
+        prepared: PreparedTurn,
+        completion: ChatCompletionResponse,
+    ) -> ChatCompletionResponse:
+        """Non-streaming wrapper: repair missing imports then return completion."""
+        events: List[StreamEvent] = []
+        async for event in self._stream_preview_repairs(prepared, completion):
+            events.append(event)
+        done = next((event for event in reversed(events) if event.type == "done"), None)
+        if done is None:
+            return completion
+        metadata = dict(completion.metadata)
+        metadata.update(done.metadata or {})
+        return ChatCompletionResponse(
+            user_message=completion.user_message,
+            assistant_message=ChatMessageResponse(**(done.assistant_message or completion.assistant_message.model_dump(mode="json"))),
+            applied_changes=done.file_changes or completion.applied_changes,
+            metadata=metadata,
+        )
+
+    async def _stream_preview_repairs(
+        self,
+        prepared: PreparedTurn,
+        completion: ChatCompletionResponse,
+    ) -> AsyncIterator[StreamEvent]:
+        """Validate Live Preview imports and auto-repair up to N times.
+
+        Yields progress deltas during repairs, then a final ``done`` event that
+        merges original + repair file changes. When retries are exhausted,
+        appends guidance asking the user for a more specific prompt.
+        """
+        settings = get_settings()
+        max_retries = max(0, int(settings.preview_repair_max_retries))
+        all_changes = list(completion.applied_changes)
+        metadata = dict(completion.metadata)
+        assistant_content = completion.assistant_message.content
+        assistant_payload = completion.assistant_message.model_dump(mode="json")
+
+        if not self._should_check_preview_integrity(prepared) or max_retries == 0:
+            yield StreamEvent(
+                type="done",
+                content=assistant_content,
+                file_changes=all_changes,
+                metadata=metadata,
+                assistant_message=assistant_payload,
+                user_message=completion.user_message.model_dump(mode="json"),
+            )
+            return
+
+        # Only auto-repair when this turn changed files (avoid surprise LLM calls
+        # on pure Q&A in a website project).
+        if not all_changes:
+            yield StreamEvent(
+                type="done",
+                content=assistant_content,
+                file_changes=all_changes,
+                metadata=metadata,
+                assistant_message=assistant_payload,
+                user_message=completion.user_message.model_dump(mode="json"),
+            )
+            return
+
+        issues = await self._load_integrity_issues(
+            prepared.project_id,
+            prepared.image_discovery,
+        )
+        if not issues:
+            metadata["preview_integrity"] = "ok"
+            yield StreamEvent(
+                type="done",
+                content=assistant_content,
+                file_changes=all_changes,
+                metadata=metadata,
+                assistant_message=assistant_payload,
+                user_message=completion.user_message.model_dump(mode="json"),
+            )
+            return
+
+        with tracer.start_as_current_span("ai.preview_repair") as span:
+            set_span_attrs(
+                span,
+                {
+                    "preview.integrity.issues": len(issues),
+                    "preview.repair.max_retries": max_retries,
+                },
+            )
+            attempts_used = 0
+            for attempt in range(1, max_retries + 1):
+                attempts_used = attempt
+                progress = (
+                    f"\n\nAuto-repairing Live Preview blockers "
+                    f"(attempt {attempt}/{max_retries})…\n"
+                    f"Found {len(issues)} integrity issue(s).\n"
+                )
+                yield StreamEvent(type="delta", content=progress)
+                assistant_content = f"{assistant_content}{progress}".strip()
+
+                project_oid = parse_object_id(prepared.project_id, "project_id")
+                files = await self._files.list_for_project(project_oid)
+                folders = await self._folders.list_for_project(project_oid)
+                file_paths = [str(item.get("path") or "") for item in files]
+                repair_user_prompt = build_repair_prompt(
+                    issues,
+                    attempt=attempt,
+                    max_attempts=max_retries,
+                    file_paths=file_paths,
+                )
+                context = await self._context_builder.build(
+                    project=prepared.project,
+                    files=files,
+                    folders=folders,
+                    chat_history=[],
+                    current_file_path=None,
+                    selected_code=None,
+                    recent_paths=file_paths[:12],
+                    open_tabs=[],
+                    user_request=repair_user_prompt,
+                )
+                repair_messages = self._prompt_builder.build(
+                    context,
+                    repair_user_prompt,
+                    category=RequestCategory.WEBSITE_BUILDER,
+                    image_discovery=prepared.image_discovery,
+                )
+
+                try:
+                    with tracer.start_as_current_span("ai.preview_repair.llm") as llm_span:
+                        llm_response = await self._provider.complete(
+                            repair_messages,
+                            temperature=min(prepared.routing.temperature, 0.3),
+                            max_tokens=prepared.routing.max_tokens,
+                            model=prepared.routing.model,
+                        )
+                        set_span_attrs(
+                            llm_span,
+                            {
+                                "llm.prompt_tokens": llm_response.prompt_tokens,
+                                "llm.completion_tokens": llm_response.completion_tokens,
+                                "attempt": attempt,
+                            },
+                        )
+                except Exception as exc:
+                    logger.exception("Preview repair LLM call failed attempt=%s", attempt)
+                    record_exception(span, exc)
+                    break
+
+                parsed = self._parser.parse(llm_response.content)
+                applied: List[FileChangeProposal] = []
+                reverse_changes: List[Dict[str, Any]] = []
+                if prepared.apply_changes and parsed.file_changes:
+                    workspace_type = str(prepared.project.get("workspace_type") or "")
+                    try:
+                        applied, reverse = await self._modifier.apply(
+                            prepared.project_id,
+                            parsed.file_changes,
+                            workspace_type=workspace_type,
+                        )
+                        reverse_changes = [item.to_dict() for item in reverse]
+                        all_changes.extend(applied)
+                    except ValidationAppError as exc:
+                        applied = []
+                        reverse_changes = []
+                        note = exc.message or edit_restriction_message(workspace_type)
+                        repair_message = await self._chat.add_message(
+                            session_id=prepared.session_oid,
+                            project_id=project_oid,
+                            role="assistant",
+                            content=note,
+                        )
+                        assistant_payload = ChatMessageResponse(**repair_message).model_dump(
+                            mode="json"
+                        )
+                        assistant_content = f"{assistant_content}\n\n{note}".strip()
+                        yield StreamEvent(type="delta", content=f"{note}\n")
+                        break
+
+                note = parsed.message.strip() or (
+                    f"Auto-repair attempt {attempt}/{max_retries}: "
+                    f"applied {len(applied)} file change(s)."
+                )
+                repair_message = await self._chat.add_message(
+                    session_id=prepared.session_oid,
+                    project_id=project_oid,
+                    role="assistant",
+                    content=note,
+                    token_count=(
+                        (llm_response.prompt_tokens or 0)
+                        + (llm_response.completion_tokens or 0)
+                    )
+                    or None,
+                    model=llm_response.model or prepared.routing.model,
+                    latency_ms=None,
+                    file_changes=[change.model_dump() for change in applied],
+                    reverse_changes=reverse_changes,
+                )
+                assistant_payload = ChatMessageResponse(**repair_message).model_dump(mode="json")
+                assistant_content = f"{assistant_content}\n\n{note}".strip()
+                yield StreamEvent(type="delta", content=f"{note}\n")
+
+                issues = await self._load_integrity_issues(
+                    prepared.project_id,
+                    prepared.image_discovery,
+                )
+                if not issues:
+                    metadata["preview_integrity"] = "repaired"
+                    metadata["preview_repair_attempts"] = attempts_used
+                    set_span_attrs(span, {"preview.repair.success": True, "attempt": attempt})
+                    break
+
+            if issues:
+                guidance = build_exhausted_user_message(issues)
+                exhausted = await self._chat.add_message(
+                    session_id=prepared.session_oid,
+                    project_id=parse_object_id(prepared.project_id, "project_id"),
+                    role="assistant",
+                    content=guidance,
+                )
+                assistant_payload = ChatMessageResponse(**exhausted).model_dump(mode="json")
+                assistant_content = f"{assistant_content}\n\n{guidance}".strip()
+                metadata["preview_integrity"] = "failed"
+                metadata["preview_repair_attempts"] = attempts_used
+                metadata["preview_integrity_issues"] = len(issues)
+                set_span_attrs(
+                    span,
+                    {
+                        "preview.repair.success": False,
+                        "preview.integrity.remaining": len(issues),
+                    },
+                )
+                yield StreamEvent(type="delta", content=f"\n{guidance}\n")
+
+            yield StreamEvent(
+                type="done",
+                content=assistant_content,
+                file_changes=all_changes,
+                metadata=metadata,
+                assistant_message=assistant_payload,
+                user_message=completion.user_message.model_dump(mode="json"),
             )

@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChatMessage } from '@/types';
+import { AppliedChanges } from '@/components/chat/AppliedChanges';
 import { Button } from '@/components/common/Button';
 import { cn } from '@/utils/helpers';
 
@@ -10,9 +11,13 @@ interface ChatPanelProps {
   onSend: (content: string) => Promise<void>;
   onCancel?: () => void;
   appliedChangesCount?: number;
+  /** Assistant message holding the most recent change set. */
+  appliedChangesMessageId?: string;
   canUndo?: boolean;
   undoPending?: boolean;
   onUndo?: () => void;
+  /** Open a changed file in the editor from the diff review. */
+  onOpenFile?: (path: string) => void;
 }
 
 /**
@@ -39,12 +44,17 @@ export function ChatPanel({
   onSend,
   onCancel,
   appliedChangesCount = 0,
+  appliedChangesMessageId,
   canUndo = false,
   undoPending = false,
   onUndo,
+  onOpenFile,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState('');
+  // Assistant message whose file diff is currently expanded, if any.
+  const [openDiffId, setOpenDiffId] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const diffRefs = useRef(new Map<string, HTMLDivElement>());
   const liveText = useMemo(() => stripFileFences(streamingContent), [streamingContent]);
   // Prompt submission stays locked until streaming AND file application
   // have both finished (isSending), and while an undo is in flight.
@@ -53,6 +63,22 @@ export function ChatPanel({
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isSending, liveText]);
+
+  useEffect(() => {
+    if (!openDiffId) {
+      return;
+    }
+    diffRefs.current.get(openDiffId)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [openDiffId]);
+
+  /**
+   * Expand or collapse the line diff for one assistant change set.
+   *
+   * @param messageId - Assistant message identifier.
+   */
+  function toggleDiff(messageId: string) {
+    setOpenDiffId((current) => (current === messageId ? null : messageId));
+  }
 
   /**
    * Submit the current draft message.
@@ -78,12 +104,23 @@ export function ChatPanel({
 
       {appliedChangesCount > 0 ? (
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 bg-ink-900/40 px-3 py-1.5">
-          <p className="truncate text-[11px] text-slate-400">
-            Applied:{' '}
-            <span className="font-medium text-sand-50">
-              {appliedChangesCount} file{appliedChangesCount === 1 ? '' : 's'}
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 items-center gap-1 text-left text-[11px] text-slate-400 hover:text-sand-50"
+            disabled={!appliedChangesMessageId}
+            onClick={() => appliedChangesMessageId && toggleDiff(appliedChangesMessageId)}
+            title="Review the lines the AI changed"
+          >
+            <span className="truncate">
+              Applied:{' '}
+              <span className="font-medium text-sand-50">
+                {appliedChangesCount} file{appliedChangesCount === 1 ? '' : 's'}
+              </span>
             </span>
-          </p>
+            <span className="shrink-0 text-accent">
+              {openDiffId === appliedChangesMessageId ? 'Hide changes' : 'View changes'}
+            </span>
+          </button>
           <Button
             type="button"
             size="sm"
@@ -113,6 +150,13 @@ export function ChatPanel({
           messages.map((message) => (
             <div
               key={message.id}
+              ref={(node) => {
+                if (node) {
+                  diffRefs.current.set(message.id, node);
+                } else {
+                  diffRefs.current.delete(message.id);
+                }
+              }}
               className={cn(
                 'rounded-2xl px-3 py-2 text-sm leading-6',
                 message.role === 'user'
@@ -125,10 +169,23 @@ export function ChatPanel({
               </p>
               <p className="whitespace-pre-wrap">{message.content}</p>
               {message.file_changes?.length ? (
-                <p className="mt-2 text-xs text-accent-soft">
-                  Applied {message.file_changes.length} file change(s)
-                  {message.undone ? ' · reverted' : ''}
-                </p>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => toggleDiff(message.id)}
+                    className="mt-2 text-xs text-accent-soft hover:underline"
+                  >
+                    {openDiffId === message.id ? '▾' : '▸'} Applied{' '}
+                    {message.file_changes.length} file change(s)
+                    {message.undone ? ' · reverted' : ''}
+                  </button>
+                  {openDiffId === message.id ? (
+                    <AppliedChanges
+                      changes={message.file_changes}
+                      onOpenFile={onOpenFile}
+                    />
+                  ) : null}
+                </>
               ) : null}
             </div>
           ))
