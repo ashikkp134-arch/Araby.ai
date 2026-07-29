@@ -79,7 +79,7 @@ This starts **MongoDB + Redis + Phoenix (traces) + FastAPI backend + nginx front
 
 ### 3. Open the app
 
-- App: [http://localhost](http://localhost)
+- App: [http://localhost](http://localhost)/3000/
 - API health: [http://localhost/health](http://localhost/health)
 - Phoenix traces: [http://localhost:6006](http://localhost:6006)
 
