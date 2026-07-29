@@ -18,8 +18,14 @@ import {
 } from '@/api/chat';
 import { useEditorStore } from '@/stores/editorStore';
 import type { ChatMessage, FileNode, ProjectFile } from '@/types';
+import type { PreviewErrorInfo } from '@/components/editor/LivePreview';
 import { downloadProjectZip } from '@/utils/downloadProjectZip';
 import { getErrorMessage } from '@/utils/helpers';
+import {
+  editRestrictionMessage,
+  isEditIntentMessage,
+  isPathEditable,
+} from '@/utils/workspaceFilePolicy';
 
 type ActiveView = 'editor' | 'preview';
 
@@ -28,6 +34,31 @@ interface PreviewTabState {
   files: ProjectFile[];
   loading: boolean;
 }
+
+const PREVIEW_REPAIR_MAX = 3;
+
+/**
+ * Index every file node in a tree by its project-relative path.
+ *
+ * @param nodes - File tree roots.
+ * @returns Map of path to file node.
+ */
+function indexFilesByPath(nodes: FileNode[]): Map<string, FileNode> {
+  const byPath = new Map<string, FileNode>();
+  const walk = (items: FileNode[]) => {
+    for (const item of items) {
+      if (item.type === 'file') {
+        byPath.set(item.path, item);
+      }
+      if (item.children) {
+        walk(item.children);
+      }
+    }
+  };
+  walk(nodes);
+  return byPath;
+}
+
 
 /**
  * Encapsulate editor page data loading and file/chat mutations.
@@ -45,11 +76,13 @@ export function useProjectEditor(projectId: string) {
     setActiveTab,
     updateContent,
     markSaved,
+    syncTab,
     reset,
   } = useEditorStore();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [chatPending, setChatPending] = useState(false);
+  const [previewRepairing, setPreviewRepairing] = useState(false);
   const [undoPending, setUndoPending] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [optimisticMessages, setOptimisticMessages] = useState<ChatMessage[]>([]);
@@ -60,7 +93,12 @@ export function useProjectEditor(projectId: string) {
     loading: false,
   });
   const [downloading, setDownloading] = useState(false);
+  const [restrictionMessage, setRestrictionMessage] = useState<string | null>(null);
   const streamHandleRef = useRef<StreamChatHandle | null>(null);
+  const previewRepairAttemptsRef = useRef(0);
+  const previewRepairInFlightRef = useRef(false);
+  const lastPreviewErrorKeyRef = useRef('');
+
 
   const projectQuery = useQuery({
     queryKey: ['project', projectId],
@@ -143,8 +181,26 @@ export function useProjectEditor(projectId: string) {
     return files;
   }, [projectId]);
 
+  const workspaceType = projectQuery.data?.workspace_type;
+  const activeFileEditable = isPathEditable(workspaceType, activeTab?.path);
+
+  const showWorkspaceRestriction = useCallback(
+    (message?: string) => {
+      setRestrictionMessage(message || editRestrictionMessage(workspaceType));
+    },
+    [workspaceType],
+  );
+
+  const clearWorkspaceRestriction = useCallback(() => {
+    setRestrictionMessage(null);
+  }, []);
+
   const saveActive = useCallback(async () => {
     if (!activeTab || !activeTab.dirty) {
+      return;
+    }
+    if (!isPathEditable(workspaceType, activeTab.path)) {
+      showWorkspaceRestriction();
       return;
     }
     setSaving(true);
@@ -153,21 +209,26 @@ export function useProjectEditor(projectId: string) {
       const saved = await updateFile(projectId, activeTab.id, { content: activeTab.content });
       markSaved(activeTab.id, saved.content);
     } catch (err) {
-      setError(getErrorMessage(err));
+      const message = getErrorMessage(err);
+      if (/only (python|javascript)/i.test(message)) {
+        showWorkspaceRestriction(message);
+      } else {
+        setError(message);
+      }
     } finally {
       setSaving(false);
     }
-  }, [activeTab, markSaved, projectId]);
+  }, [activeTab, markSaved, projectId, showWorkspaceRestriction, workspaceType]);
 
   useEffect(() => {
-    if (!activeTab?.dirty) {
+    if (!activeTab?.dirty || !isPathEditable(workspaceType, activeTab.path)) {
       return undefined;
     }
     const timer = window.setTimeout(() => {
       void saveActive();
     }, 1200);
     return () => window.clearTimeout(timer);
-  }, [activeTab?.content, activeTab?.dirty, activeTab?.id, saveActive]);
+  }, [activeTab?.content, activeTab?.dirty, activeTab?.id, activeTab?.path, saveActive, workspaceType]);
 
   /**
    * Open a file node in a Monaco tab and switch back to the editor view.
@@ -193,6 +254,20 @@ export function useProjectEditor(projectId: string) {
   }
 
   /**
+   * Open a file by its project-relative path, used when picking a file from
+   * the applied-changes diff.
+   *
+   * @param path - Project-relative file path.
+   */
+  async function handleOpenFilePath(path: string) {
+    const node = indexFilesByPath(treeQuery.data || []).get(path);
+    if (!node) {
+      return;
+    }
+    await handleOpenFile(node);
+  }
+
+  /**
    * Select an already-open file tab and switch back to the editor view.
    *
    * @param tabId - Editor tab identifier.
@@ -210,6 +285,10 @@ export function useProjectEditor(projectId: string) {
     if (!name) {
       return;
     }
+    if (!isPathEditable(workspaceType, name)) {
+      showWorkspaceRestriction();
+      return;
+    }
     const folderPath = window.prompt('Folder path (leave empty for root)', '') || '';
     try {
       const file = await createFile(projectId, { name, folder_path: folderPath, content: '' });
@@ -224,7 +303,12 @@ export function useProjectEditor(projectId: string) {
       });
       setActiveView('editor');
     } catch (err) {
-      setError(getErrorMessage(err));
+      const message = getErrorMessage(err);
+      if (/only (python|javascript)/i.test(message)) {
+        showWorkspaceRestriction(message);
+      } else {
+        setError(message);
+      }
     }
   }
 
@@ -251,6 +335,10 @@ export function useProjectEditor(projectId: string) {
    * @param node - File tree node.
    */
   async function handleDeleteNode(node: FileNode) {
+    if (node.type === 'file' && !isPathEditable(workspaceType, node.path)) {
+      showWorkspaceRestriction();
+      return;
+    }
     if (!window.confirm(`Delete ${node.path}?`)) {
       return;
     }
@@ -263,7 +351,12 @@ export function useProjectEditor(projectId: string) {
       }
       await queryClient.invalidateQueries({ queryKey: ['file-tree', projectId] });
     } catch (err) {
-      setError(getErrorMessage(err));
+      const message = getErrorMessage(err);
+      if (/only (python|javascript)/i.test(message)) {
+        showWorkspaceRestriction(message);
+      } else {
+        setError(message);
+      }
     }
   }
 
@@ -278,28 +371,47 @@ export function useProjectEditor(projectId: string) {
   }
 
   /**
-   * Re-sync the active tab's content after a server-side file mutation
-   * (AI change apply or undo). Closes the tab if the file no longer exists.
+   * Refresh the file tree and every open tab from the server after a
+   * server-side file mutation (AI change apply or undo), so the editor shows
+   * the new content immediately instead of a stale buffer.
+   *
+   * Tabs are matched by path, which keeps them bound to their file even when
+   * a delete + recreate gives it a new id. A tab whose file is gone is closed.
    */
-  const resyncActiveTab = useCallback(async () => {
-    if (!activeTab) {
+  const refreshWorkspaceState = useCallback(async () => {
+    const tree = await queryClient.fetchQuery({
+      queryKey: ['file-tree', projectId],
+      queryFn: () => getFileTree(projectId),
+    });
+    const openTabs = useEditorStore.getState().tabs;
+    if (!openTabs.length) {
       return;
     }
-    try {
-      const refreshed = await getFile(projectId, activeTab.id);
-      openTab({
-        id: refreshed.id,
-        path: refreshed.path,
-        name: refreshed.name,
-        language: refreshed.language,
-        content: refreshed.content,
-        dirty: false,
-      });
-    } catch {
-      // File was deleted by the AI change (or its undo); drop the stale tab.
-      closeTab(activeTab.id);
-    }
-  }, [activeTab, closeTab, openTab, projectId]);
+    const filesByPath = indexFilesByPath(tree);
+
+    await Promise.all(
+      openTabs.map(async (tab) => {
+        const node = filesByPath.get(tab.path);
+        if (!node) {
+          closeTab(tab.id);
+          return;
+        }
+        try {
+          const refreshed = await getFile(projectId, node.id);
+          syncTab(tab.id, {
+            id: refreshed.id,
+            path: refreshed.path,
+            name: refreshed.name,
+            language: refreshed.language,
+            content: refreshed.content,
+            dirty: false,
+          });
+        } catch {
+          closeTab(tab.id);
+        }
+      }),
+    );
+  }, [closeTab, projectId, queryClient, syncTab]);
 
   /**
    * Send a chat message through the streaming AI pipeline. The Send button
@@ -310,6 +422,19 @@ export function useProjectEditor(projectId: string) {
    */
   async function handleSendChat(content: string) {
     setError('');
+    // Block AI enhance/edit of non-language files in restricted workspaces.
+    if (
+      activeTab?.path &&
+      !isPathEditable(workspaceType, activeTab.path) &&
+      isEditIntentMessage(content)
+    ) {
+      showWorkspaceRestriction();
+      return;
+    }
+    if (!content.includes('LIVE PREVIEW AUTO-REPAIR')) {
+      previewRepairAttemptsRef.current = 0;
+      lastPreviewErrorKeyRef.current = '';
+    }
     setChatPending(true);
     setStreamingContent('');
     setOptimisticMessages([
@@ -340,7 +465,11 @@ export function useProjectEditor(projectId: string) {
           setStreamingContent('');
         },
         onError: (message) => {
-          setError(message);
+          if (/only (python|javascript)/i.test(message)) {
+            showWorkspaceRestriction(message);
+          } else {
+            setError(message);
+          }
           setStreamingContent('');
         },
       },
@@ -353,11 +482,15 @@ export function useProjectEditor(projectId: string) {
       await handle.done;
       setOptimisticMessages([]);
       await queryClient.invalidateQueries({ queryKey: ['chat', projectId] });
-      await queryClient.invalidateQueries({ queryKey: ['file-tree', projectId] });
-      await resyncActiveTab();
+      await refreshWorkspaceState();
     } catch (err) {
       // Stream errors are already shown via onError; keep a fallback.
-      setError((prev) => prev || getErrorMessage(err));
+      const message = getErrorMessage(err);
+      if (/only (python|javascript)/i.test(message)) {
+        showWorkspaceRestriction(message);
+      } else {
+        setError((prev) => prev || message);
+      }
       setOptimisticMessages([]);
     } finally {
       streamHandleRef.current = null;
@@ -378,8 +511,7 @@ export function useProjectEditor(projectId: string) {
     try {
       await undoLastAiChanges(projectId);
       await queryClient.invalidateQueries({ queryKey: ['chat', projectId] });
-      await queryClient.invalidateQueries({ queryKey: ['file-tree', projectId] });
-      await resyncActiveTab();
+      await refreshWorkspaceState();
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -437,6 +569,64 @@ export function useProjectEditor(projectId: string) {
     setActiveView((current) => (current === 'preview' ? 'editor' : current));
   }
 
+  /**
+   * When Live Preview crashes (missing imports / runtime), auto-send a repair
+   * prompt in the background (max 3). No error banners — preview shows a loader.
+   */
+  const handlePreviewError = useCallback(
+    (info: PreviewErrorInfo) => {
+      const errorKey = `${info.kind}:${info.missingModule || ''}:${info.message.slice(0, 180)}`;
+      if (errorKey === lastPreviewErrorKeyRef.current && previewRepairInFlightRef.current) {
+        return;
+      }
+      if (chatPending || previewRepairInFlightRef.current) {
+        setPreviewRepairing(true);
+        return;
+      }
+      if (previewRepairAttemptsRef.current >= PREVIEW_REPAIR_MAX) {
+        setPreviewRepairing(false);
+        return;
+      }
+
+      lastPreviewErrorKeyRef.current = errorKey;
+      previewRepairAttemptsRef.current += 1;
+      const attempt = previewRepairAttemptsRef.current;
+      const diagnostic = info.message.trim().slice(0, 5000);
+      const missing = info.missingModule
+        ? `Missing module: ${info.missingModule}.`
+        : `Failure type: ${info.kind}.`;
+
+      const fixPrompt = [
+        'LIVE PREVIEW AUTO-REPAIR (fix without asking questions):',
+        `Attempt ${attempt}/${PREVIEW_REPAIR_MAX}.`,
+        missing,
+        'Exact compiler/runtime diagnostic:',
+        diagnostic,
+        '',
+        'Inspect the current project and fix the root cause shown above.',
+        'Do not return a generic plan or repeat the diagnosis.',
+        'Create/correct every required file, import, export, entry point, route, or API usage.',
+        'Preserve the requested website and use MemoryRouter for React routing.',
+        'Return complete ```file``` blocks for every affected file so Live Preview runs.',
+      ].join('\n');
+
+      previewRepairInFlightRef.current = true;
+      setPreviewRepairing(true);
+      void handleSendChat(fixPrompt)
+        .then(async () => {
+          if (previewTab.open) {
+            await handleOpenPreview();
+          }
+        })
+        .finally(() => {
+          previewRepairInFlightRef.current = false;
+          setPreviewRepairing(false);
+        });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [chatPending, previewTab.open],
+  );
+
   return {
     projectQuery,
     treeQuery,
@@ -449,17 +639,23 @@ export function useProjectEditor(projectId: string) {
     saving,
     error,
     chatPending,
+    previewRepairing,
     undoPending,
     streamingContent,
     lastChangeSet,
     canUndo,
     previewTab,
     downloading,
+    restrictionMessage,
+    activeFileEditable,
+    showWorkspaceRestriction,
+    clearWorkspaceRestriction,
     setActiveTab: handleSelectFileTab,
     closeTab,
     updateContent,
     saveActive,
     handleOpenFile,
+    handleOpenFilePath,
     handleCreateFile,
     handleCreateFolder,
     handleDeleteNode,
@@ -470,5 +666,6 @@ export function useProjectEditor(projectId: string) {
     handleOpenPreview,
     handleSelectPreviewTab,
     handleClosePreviewTab,
+    handlePreviewError,
   };
 }

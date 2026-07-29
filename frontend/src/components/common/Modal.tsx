@@ -1,4 +1,5 @@
 import type { PropsWithChildren } from 'react';
+import { Button } from '@/components/common/Button';
 import { cn } from '@/utils/helpers';
 
 interface SpinnerProps {
@@ -59,5 +60,26 @@ export function Modal({
         {children}
       </div>
     </div>
+  );
+}
+
+interface ValidationModalProps {
+  message: string;
+  onClose: () => void;
+}
+
+/**
+ * Workspace policy validation modal with a single clear message.
+ */
+export function ValidationModal({ message, onClose }: ValidationModalProps) {
+  return (
+    <Modal title="Workspace restriction" onClose={onClose}>
+      <p className="text-sm leading-6 text-slate-200">{message}</p>
+      <div className="mt-5 flex justify-end">
+        <Button type="button" size="sm" onClick={onClose}>
+          OK
+        </Button>
+      </div>
+    </Modal>
   );
 }

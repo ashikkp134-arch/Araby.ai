@@ -26,6 +26,7 @@ from app.utils.files import (
     sanitize_name,
 )
 from app.utils.object_id import parse_object_id
+from app.utils.workspace_file_policy import assert_path_editable
 
 logger = logging.getLogger(__name__)
 
@@ -106,11 +107,12 @@ class FileService:
         Returns:
             Created file response.
         """
-        await self._project_service.ensure_owned(user_id, project_id)
+        project = await self._project_service.ensure_owned(user_id, project_id)
         project_oid = parse_object_id(project_id, "project_id")
         folder_path = normalize_path(payload.folder_path)
         name = sanitize_name(payload.name)
         path = join_path(folder_path, name)
+        assert_path_editable(str(project.get("workspace_type") or ""), path)
         if await self._files.find_by_path(project_oid, path):
             raise ConflictError("File already exists")
         folder_id = None
@@ -179,18 +181,23 @@ class FileService:
         Returns:
             Updated file response.
         """
-        await self._project_service.ensure_owned(user_id, project_id)
+        project = await self._project_service.ensure_owned(user_id, project_id)
         file_oid = parse_object_id(file_id, "file_id")
         existing = await self._files.find_by_id(file_oid)
         if not existing or str(existing["project_id"]) != project_id:
             raise NotFoundError("File not found")
+        workspace_type = str(project.get("workspace_type") or "")
         updates: Dict[str, Any] = {}
         if payload.content is not None:
+            assert_path_editable(workspace_type, str(existing.get("path") or ""))
             updates["content"] = payload.content
         if payload.name is not None:
             new_name = sanitize_name(payload.name)
             parent = parent_path_of(existing["path"])
             new_path = join_path(parent, new_name)
+            assert_path_editable(workspace_type, new_path)
+            # Renaming an already-restricted source to another allowed type is fine;
+            # renaming into a disallowed extension is blocked above.
             conflict = await self._files.find_by_path(
                 parse_object_id(project_id, "project_id"),
                 new_path,
@@ -215,10 +222,14 @@ class FileService:
             project_id: Project id.
             file_id: File id.
         """
-        await self._project_service.ensure_owned(user_id, project_id)
+        project = await self._project_service.ensure_owned(user_id, project_id)
         file_doc = await self._files.find_by_id(parse_object_id(file_id, "file_id"))
         if not file_doc or str(file_doc["project_id"]) != project_id:
             raise NotFoundError("File not found")
+        assert_path_editable(
+            str(project.get("workspace_type") or ""),
+            str(file_doc.get("path") or ""),
+        )
         await self._files.delete(parse_object_id(file_id, "file_id"))
         await self._projects.touch(parse_object_id(project_id, "project_id"))
         await self._invalidate_project_cache(project_id)
@@ -307,6 +318,9 @@ class FileService:
         normalized = normalize_path(path)
         if not normalized:
             raise ValidationAppError("Invalid file path")
+        project = await self._projects.find_by_id(project_oid)
+        if project:
+            assert_path_editable(str(project.get("workspace_type") or ""), normalized)
         existing = await self._files.find_by_path(project_oid, normalized)
         if existing:
             updated = await self._files.update(existing["_id"], {"content": content})
@@ -364,6 +378,12 @@ class FileService:
         existing = await self._files.find_by_path(project_oid, normalize_path(path))
         if not existing:
             raise NotFoundError("File not found")
+        project = await self._projects.find_by_id(project_oid)
+        if project:
+            assert_path_editable(
+                str(project.get("workspace_type") or ""),
+                str(existing.get("path") or path),
+            )
         await self._files.delete(existing["_id"])
         await self._invalidate_project_cache(project_id)
 

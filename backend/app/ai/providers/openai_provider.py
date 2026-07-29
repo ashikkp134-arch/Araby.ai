@@ -101,9 +101,13 @@ class OpenAIProvider(LLMProvider):
             logger.warning(
                 "OPENAI_API_KEY is missing or looks like a placeholder; AI chat will fail until set"
             )
-        # Empty OPENAI_BASE_URL keeps the default OpenAI host; set it for
-        # OpenAI-compatible providers (e.g. Grok/xAI: https://api.x.ai/v1).
-        base_url = (settings.openai_base_url or "").strip() or None
+        # A present-but-empty OPENAI_BASE_URL environment variable is read by
+        # some OpenAI SDK releases as an empty URL instead of the default host.
+        # Always provide a valid endpoint explicitly.
+        base_url = (
+            (settings.openai_base_url or "").strip()
+            or "https://api.openai.com/v1"
+        )
         self._client = AsyncOpenAI(
             api_key=self._api_key or "missing",
             base_url=base_url,

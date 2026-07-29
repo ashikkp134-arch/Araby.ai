@@ -46,8 +46,8 @@ class Settings(BaseSettings):
     jwt_refresh_secret: str = Field(..., alias="JWT_REFRESH_SECRET")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
-    openai_model_light: str = Field(default="", alias="OPENAI_MODEL_LIGHT")
-    openai_model_coding: str = Field(default="", alias="OPENAI_MODEL_CODING")
+    openai_model_light: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL_LIGHT")
+    openai_model_coding: str = Field(default="gpt-4o", alias="OPENAI_MODEL_CODING")
     # Optional OpenAI-compatible base URL (e.g. https://api.x.ai/v1 for Grok).
     # Leave empty to use the default OpenAI endpoint.
     openai_base_url: str = Field(default="", alias="OPENAI_BASE_URL")
@@ -64,10 +64,40 @@ class Settings(BaseSettings):
     app_name: str = Field(default="AI Coding Workspace", alias="APP_NAME")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     
-    OTEL_ENABLED: bool = True
-    OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:6006/v1/traces"
-    OTEL_SERVICE_NAME = "araby-codeai-backend"
-    GUARDRAILS_ENABLED = True
+    otel_enabled: bool = Field(default=True, alias="OTEL_ENABLED")
+    otel_endpoint: str = Field(
+        default="https://app.phoenix.arize.com/s/AI-Coding-Workspace/v1/traces",
+        alias="OTEL_EXPORTER_OTLP_ENDPOINT",
+    )
+    otel_headers: str = Field(default="", alias="OTEL_EXPORTER_OTLP_HEADERS")
+    otel_service_name: str = Field(default="araby-codeai-backend", alias="OTEL_SERVICE_NAME")
+    phoenix_collector_endpoint: str = Field(default="", alias="PHOENIX_COLLECTOR_ENDPOINT")
+    phoenix_api_key: str = Field(default="", alias="PHOENIX_API_KEY")
+    phoenix_project: str = Field(default="", alias="PHOENIX_PROJECT")
+    guardrails_enabled: bool = Field(default=True, alias="GUARDRAILS_ENABLED")
+    guardrails_block_on_input: bool = Field(default=True, alias="GUARDRAILS_BLOCK_ON_INPUT")
+    guardrails_block_on_output: bool = Field(default=True, alias="GUARDRAILS_BLOCK_ON_OUTPUT")
+    # After website/React file applies, auto-repair missing imports up to N times.
+    preview_repair_max_retries: int = Field(default=3, alias="PREVIEW_REPAIR_MAX_RETRIES")
+    # Asset Resolution Service (images before LLM generation).
+    asset_resolution_enabled: bool = Field(default=True, alias="ASSET_RESOLUTION_ENABLED")
+    asset_resolution_validate: bool = Field(default=True, alias="ASSET_RESOLUTION_VALIDATE")
+    asset_resolution_per_role: int = Field(default=4, alias="ASSET_RESOLUTION_PER_ROLE")
+    # Wall-clock budget for provider search plus OpenAI semantic verification.
+    asset_resolution_budget_seconds: float = Field(
+        default=30.0,
+        alias="ASSET_RESOLUTION_BUDGET_SECONDS",
+    )
+    asset_semantic_verification_enabled: bool = Field(
+        default=True,
+        alias="ASSET_SEMANTIC_VERIFICATION_ENABLED",
+    )
+    openai_image_verification_model: str = Field(
+        default="gpt-4o-mini",
+        alias="OPENAI_IMAGE_VERIFICATION_MODEL",
+    )
+    unsplash_access_key: str = Field(default="", alias="UNSPLASH_ACCESS_KEY")
+    pexels_api_key: str = Field(default="", alias="PEXELS_API_KEY")
 
     @field_validator("jwt_secret", "jwt_refresh_secret")
     @classmethod
@@ -104,3 +134,12 @@ def get_settings() -> Settings:
         Settings instance loaded from environment.
     """
     return Settings()
+
+
+def clear_settings_cache() -> None:
+    """Drop the cached Settings so the next ``get_settings`` reloads ``.env``.
+
+    Used on process (re)start with ``uvicorn --reload`` so key rotations and
+    other env changes take effect without a full cold start.
+    """
+    get_settings.cache_clear()
