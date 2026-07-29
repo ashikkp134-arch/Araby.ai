@@ -202,6 +202,8 @@ Authentication uses JWT access tokens (in-memory on the client) plus HTTP-only r
 - Users can only access their own projects
 - Filenames and paths are sanitized against traversal
 
+https://github.com/ashikkp134-arch/Araby.ai/blob/main/Demo/python-ws.mp4
+
 ## Development tips
 
 - Backend working directory must be `backend/` so `app.main:app` resolves
