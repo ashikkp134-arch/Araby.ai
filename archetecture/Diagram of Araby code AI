@@ -1,0 +1,69 @@
+                         ┌──────────────────────────────┐
+                         │        React Frontend        │
+                         │  (Vite + Tailwind + Monaco)  │
+                         │                              │
+                         │ • Workspace UI (3 Cards)     │
+                         │ • Project Dashboard          │
+                         │ • Code Editor                │
+                         │ • AI Chat Panel              │
+                         │ • Live Preview (Website)     │
+                         └──────────────┬───────────────┘
+                                        │
+                         REST / WebSocket (WS)
+                                        │
+                         ┌──────────────▼───────────────┐
+                         │        Nginx Gateway         │
+                         │  (/api + /ws reverse proxy)  │
+                         └──────────────┬───────────────┘
+                                        │
+        ┌───────────────────────────────▼───────────────────────────────┐
+        │                        FastAPI Backend                         │
+        │                (Modular Monolith Architecture)                 │
+        │                                                                │
+        │  ┌───────────────┐   ┌───────────────┐   ┌────────────────┐    │
+        │  │ Auth Service  │   │ Project Svc   │   │  File Service  │    │
+        │  │ (JWT, bcrypt) │   │               │   │                │    │
+        │  └──────┬────────┘   └──────┬────────┘   └──────┬─────────┘    │
+        │         │                   │                   │              │
+        │  ┌──────▼────────┐   ┌──────▼────────┐   ┌──────▼────────┐    |
+        │  │ Chat Service  │   │ AI Service    │   │ Repo Layer    │     │
+        │  │ (history, WS) │   │ (core logic)  │   │ (Mongo access)│     │
+        │  └──────┬────────┘   └──────┬────────┘   └───────────────┘     │
+        │         │                   │                                  │
+        │         │         ┌─────────▼─────────┐                        │
+        │         │         │ Context Builder   │                        │
+        │         │         │ (files, imports,  │                        │
+        │         │         │ chat, selection)  │                        │
+        │         │         └─────────┬─────────┘                        │
+        │         │                   │                                  │
+        │         │         ┌─────────▼─────────┐                        │
+        │         │         │ Prompt Engine     │                        │
+        │         │         └─────────┬─────────┘                        │
+        │         │                   │                                  │
+        │         │         ┌─────────▼─────────┐                        │
+        │         │         │ File Edit Engine  │                       │
+        │         │         │ (apply changes,   │                       │
+        │         │         │ undo tracking)    │                       │
+        │         │         └─────────┬─────────┘                       │
+        │         │                   │                                 │
+        └─────────┼───────────────────┼────────────────────────────────┘
+                  │                   │
+        ┌─────────▼──────────┐   ┌────▼────────────┐
+        │      MongoDB       │   │      Redis       │
+        │--------------------│   │------------------│
+        │ • Users            │   │ • Cache          │
+        │ • Projects         │   │ • Rate limiting  │
+        │ • Files            │   │ • JWT blacklist  │
+        │ • Folders          │   └────────┬─────────┘
+        │ • Chat History     │            │
+        │ • AI Logs          │            │
+        └─────────┬──────────┘            │
+                  │                       │
+                  │                       │
+        ┌─────────▼─────────┐   ┌────────▼──────────┐
+        │      OpenAI API    │   │ Observability     │
+        │--------------------│   │ (Phoenix / OTEL)  │
+        │ • Code generation  │   │ • Tracing         │
+        │ • Suggestions      │   │ • Monitoring      │
+        │ • File edits       │   └───────────────────┘
+        └────────────────────┘
