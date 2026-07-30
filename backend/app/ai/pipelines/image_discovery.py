@@ -5,7 +5,7 @@ Separates image discovery from LLM code generation:
 1. Detect whether imagery is required.
 2. Search trusted providers (Unsplash / Pexels / Wikimedia / curated CDN).
 3. Validate candidates (HTTPS, HTTP 200, image MIME, min size).
-4. Use OpenAI vision to verify exact subject and named-person identity relevance.
+4. Use a lightweight vision model to verify subject and named-person identity.
 5. Inject only validated, subject-labelled URLs into the generation prompt.
 
 The LLM must integrate these URLs — it must never invent image links.
@@ -61,7 +61,8 @@ _IMAGE_DOMAIN_KEYWORDS: Dict[str, Sequence[str]] = {
     "sports": (
         "sports", "sport", "football", "soccer", "basketball", "cricket", "tennis",
         "athlete", "athletes", "player", "players", "stadium", "league", "team",
-        "messi", "ronaldo", "pele", "maradona",
+        "messi", "ronaldo", "pele", "maradona", "formula 1", "formula one", "f1",
+        "motorsport", "racing", "racer", "driver", "drivers", "grand prix",
     ),
     "movies": ("movie", "movies", "cinema", "cinematic", "film", "films", "netflix", "imdb"),
     "restaurant": ("restaurant", "cafe", "bakery", "food", "dining", "menu", "dish", "cuisine"),
@@ -77,7 +78,12 @@ _IMAGE_DOMAIN_KEYWORDS: Dict[str, Sequence[str]] = {
     "healthcare": ("hospital", "clinic", "medical", "doctor", "doctors", "healthcare", "dental"),
     "education": ("school", "university", "college", "education", "learning", "courses"),
     "tech": ("saas", "startup", "technology", "gadget", "gadgets", "software"),
-    "cars": ("car", "cars", "automotive", "dealership", "vehicle"),
+    "cars": (
+        "car", "cars", "automotive", "dealership", "vehicle", "vehicles",
+        "rental", "rent", "lamborghini", "ferrari", "porsche", "bmw",
+        "mercedes", "audi", "mclaren", "tesla", "bentley", "rolls-royce",
+        "corvette", "supercar", "sports car",
+    ),
 }
 
 # Words that describe an ASSET SLOT, never the website domain. Excluding these
@@ -179,6 +185,11 @@ _CURATED_CDN: Dict[str, List[str]] = {
         "https://images.unsplash.com/photo-1492144534655-ae79c964c9d7?auto=format&fit=crop&w=1600&q=80",
         "https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=1600&q=80",
         "https://images.unsplash.com/photo-1542362567-b07e54358753?auto=format&fit=crop&w=1200&q=80",
+        "https://images.unsplash.com/photo-1614200179396-2bdb77ebf81b?auto=format&fit=crop&w=1600&q=80",
+        "https://images.unsplash.com/photo-1555215695-3004980ad54e?auto=format&fit=crop&w=1600&q=80",
+        "https://images.unsplash.com/photo-1618843479313-40f8afb4b4d8?auto=format&fit=crop&w=1600&q=80",
+        "https://images.unsplash.com/photo-1606664515524-ed2f786a0bd6?auto=format&fit=crop&w=1600&q=80",
+        "https://images.unsplash.com/photo-1617814076367-b759c7d7e738?auto=format&fit=crop&w=1600&q=80",
     ],
     "default": [
         "https://images.unsplash.com/photo-1506905925346-21bda4d32df4?auto=format&fit=crop&w=1600&q=80",
@@ -211,7 +222,66 @@ _ROLE_USAGE = {
     "posters": "poster / title cards",
     "products": "product cards and detail images",
     "cards": "feature cards and list thumbnails",
+    "vehicles": "vehicle cards, catalogue tiles, and detail galleries",
 }
+
+# Named luxury / rental vehicles → curated Unsplash CDN URLs (subject-matched).
+# Used when live search fails so car-rental briefs still get real model imagery.
+_CURATED_VEHICLE_IMAGES: Dict[str, List[str]] = {
+    "lamborghini huracan": [
+        "https://images.unsplash.com/photo-1544636331-e26879cd4d9b?auto=format&fit=crop&w=1600&q=80",
+        "https://images.unsplash.com/photo-1511919884225-912b5d59ba03?auto=format&fit=crop&w=1200&q=80",
+    ],
+    "ferrari 296 gtb": [
+        "https://images.unsplash.com/photo-1583121274602-3e2820c69888?auto=format&fit=crop&w=1600&q=80",
+        "https://images.unsplash.com/photo-1592198084033-aade902d4aa0?auto=format&fit=crop&w=1200&q=80",
+    ],
+    "porsche 911 turbo s": [
+        "https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=1600&q=80",
+        "https://images.unsplash.com/photo-1614162692292-7ac56d7f7f1e?auto=format&fit=crop&w=1200&q=80",
+    ],
+    "bmw m4 competition": [
+        "https://images.unsplash.com/photo-1555215695-3004980ad54e?auto=format&fit=crop&w=1600&q=80",
+        "https://images.unsplash.com/photo-1617531653332-bd46c24f2068?auto=format&fit=crop&w=1200&q=80",
+    ],
+    "mercedes-benz g-class": [
+        "https://images.unsplash.com/photo-1606664515524-ed2f786a0bd6?auto=format&fit=crop&w=1600&q=80",
+        "https://images.unsplash.com/photo-1618843479313-40f8afb4b4d8?auto=format&fit=crop&w=1200&q=80",
+    ],
+    "audi rs7": [
+        "https://images.unsplash.com/photo-1606664515524-ed2f786a0bd6?auto=format&fit=crop&w=1600&q=80",
+        "https://images.unsplash.com/photo-1614200179396-2bdb77ebf81b?auto=format&fit=crop&w=1200&q=80",
+    ],
+    "mclaren 720s": [
+        "https://images.unsplash.com/photo-1553440569-bcc63803a83d?auto=format&fit=crop&w=1600&q=80",
+        "https://images.unsplash.com/photo-1542362567-b07e54358753?auto=format&fit=crop&w=1200&q=80",
+    ],
+    "rolls-royce ghost": [
+        "https://images.unsplash.com/photo-1631295868223-63265b40d9e4?auto=format&fit=crop&w=1600&q=80",
+        "https://images.unsplash.com/photo-1563720360172-67b8f3dce741?auto=format&fit=crop&w=1200&q=80",
+    ],
+    "bentley continental gt": [
+        "https://images.unsplash.com/photo-1563720223185-11003d516935?auto=format&fit=crop&w=1600&q=80",
+        "https://images.unsplash.com/photo-1617814076367-b759c7d7e738?auto=format&fit=crop&w=1200&q=80",
+    ],
+    "tesla model s plaid": [
+        "https://images.unsplash.com/photo-1560958089-b8a1929cea89?auto=format&fit=crop&w=1600&q=80",
+        "https://images.unsplash.com/photo-1617788138017-80ad40651399?auto=format&fit=crop&w=1200&q=80",
+    ],
+    "range rover sport": [
+        "https://images.unsplash.com/photo-1519641471654-76ce0107ad1b?auto=format&fit=crop&w=1600&q=80",
+        "https://images.unsplash.com/photo-1606664515524-ed2f786a0bd6?auto=format&fit=crop&w=1200&q=80",
+    ],
+    "chevrolet corvette c8": [
+        "https://images.unsplash.com/photo-1552519507-da3b142c6e3d?auto=format&fit=crop&w=1600&q=80",
+        "https://images.unsplash.com/photo-1580273916550-e323be2ae537?auto=format&fit=crop&w=1200&q=80",
+    ],
+}
+
+# Ordered longest-first so "porsche 911 turbo s" wins over shorter brand-only hits.
+_KNOWN_VEHICLE_MODELS: Tuple[str, ...] = tuple(
+    sorted(_CURATED_VEHICLE_IMAGES.keys(), key=len, reverse=True)
+)
 
 
 def _relevance_terms(query: str) -> List[str]:
@@ -254,7 +324,7 @@ class ImageDiscoveryResult:
         domain: Detected domain key.
         queries: Search queries used.
         assets: Role → HTTPS URL list (validated).
-        asset_subjects: Asset key → exact OpenAI-verified subject label.
+        asset_subjects: Asset key → exact vision-verified subject label.
         asset_roles: Asset key → intended UI role.
         identity_verified_roles: Asset keys requiring exact identity verification.
         providers_used: Providers that contributed at least one URL.
@@ -297,7 +367,7 @@ class ImageDiscoveryResult:
             lines.append("- search_queries: " + ", ".join(self.queries[:8]))
         if not self.assets or self.url_count == 0:
             lines.append(
-                "- ERROR: OpenAI approved no exact subject matches. Do not use an "
+                "- ERROR: the vision validator approved no exact subject matches. Do not use an "
                 "unverified image or create named cards that imply a false identity."
             )
             return "\n".join(lines)
@@ -307,7 +377,7 @@ class ImageDiscoveryResult:
             subject = self.asset_subjects.get(role, role)
             usage_role = self.asset_roles.get(role, role)
             identity_note = (
-                "; exact identity verified by OpenAI"
+                "; exact identity verified by vision model"
                 if role in self.identity_verified_roles
                 else ""
             )
@@ -322,13 +392,16 @@ class ImageDiscoveryResult:
         lines.append(
             "Rules: hero/gallery URLs are wide shots (use background-size: cover); "
             f"{'/'.join(r for r in self.assets if r not in {'hero', 'gallery'}) or 'card'} "
-            "URLs are subject shots for cards. Give every <img> descriptive alt text, "
-            "loading=\"lazy\" below the fold, and an onerror fallback to another URL "
-            "from this list so a failed request never renders an empty box."
+            "URLs are subject shots for cards. Give every <img> descriptive alt text and "
+            "loading=\"lazy\" below the fold."
         )
         lines.append(
             "Never put a URL on a card whose label/name differs from its verified subject. "
             "If no exact verified subject asset exists, do not invent a named-person card."
+        )
+        lines.append(
+            "Every image URL may appear on only ONE visible Home-page element. Never reuse "
+            "the same image for multiple cards, people, products, sections, or backgrounds."
         )
         lines.append(
             "Emit ```file``` blocks that wire these exact subject-to-URL mappings into "
@@ -385,6 +458,8 @@ def _roles_for_domain(domain: str) -> List[str]:
         return ["hero", "players", "gallery", "cards"]
     if domain in {"restaurant", "ecommerce", "fashion", "dolls"}:
         return ["hero", "products", "gallery", "cards"]
+    if domain == "cars":
+        return ["hero", "vehicles", "gallery", "cards"]
     return ["hero", "gallery", "cards"]
 
 
@@ -417,7 +492,18 @@ _DOMAIN_QUERY_HINTS: Dict[str, Tuple[List[str], List[str]]] = {
     "healthcare": (["modern hospital building"], ["doctor portrait", "medical clinic"]),
     "education": (["university campus"], ["students classroom", "student studying"]),
     "tech": (["modern office technology"], ["laptop workspace", "technology device"]),
-    "cars": (["highway car driving"], ["luxury car exterior", "sports car"]),
+    "cars": (
+        [
+            "luxury car rental showroom",
+            "premium sports car night city",
+            "luxury supercar hero banner",
+        ],
+        [
+            "luxury sports car exterior studio",
+            "supercar side profile",
+            "premium SUV exterior",
+        ],
+    ),
     "default": (["cinematic landscape"], ["modern office workspace"]),
 }
 
@@ -462,9 +548,16 @@ def extract_topic(user_request: str) -> str:
 
 
 def _named_people_from_request(user_request: str) -> List[VisualAssetRequirement]:
-    """Recover explicit line-item names if OpenAI requirement extraction is incomplete."""
+    """Recover explicit line-item names if model requirement extraction is incomplete."""
     requirements: List[VisualAssetRequirement] = []
     seen: set[str] = set()
+    is_motorsport = bool(
+        re.search(
+            r"\b(f1|formula\s*(?:1|one)|motorsport|racing|grand prix|driver)\b",
+            user_request or "",
+            re.IGNORECASE,
+        )
+    )
     for raw_line in (user_request or "").splitlines():
         line = re.sub(r"^[\s#>*+\-\d.)]+", "", raw_line).strip().strip("*_`")
         words = re.findall(r"[^\W\d_][\wÀ-ÖØ-öø-ÿ'-]*\.?", line, re.UNICODE)
@@ -489,10 +582,110 @@ def _named_people_from_request(user_request: str) -> List[VisualAssetRequirement
                 key=key,
                 role="players",
                 subject=subject,
-                query=f"{subject} football player portrait",
+                query=(
+                    f"{subject} Formula 1 driver portrait"
+                    if is_motorsport
+                    else f"{subject} athlete portrait"
+                ),
                 identity_required=True,
             )
         )
+    return requirements[:16]
+
+
+def _normalize_vehicle_label(text: str) -> str:
+    """Lowercase and collapse punctuation for vehicle name matching.
+
+    Accented letters (e.g. Huracán) are folded to ASCII so curated keys match.
+    """
+    import unicodedata
+
+    folded = unicodedata.normalize("NFKD", text or "")
+    folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+    cleaned = re.sub(r"[^a-z0-9]+", " ", folded.lower())
+    return " ".join(cleaned.split())
+
+
+def _display_vehicle_name(normalized: str) -> str:
+    """Title-case a normalized vehicle key for prompt subject labels."""
+    specials = {
+        "bmw": "BMW",
+        "gtb": "GTB",
+        "gt": "GT",
+        "rs7": "RS7",
+        "suv": "SUV",
+        "c8": "C8",
+        "g": "G",
+    }
+    parts: List[str] = []
+    for token in normalized.split():
+        parts.append(specials.get(token, token.capitalize()))
+    return " ".join(parts)
+
+
+def _named_vehicles_from_request(user_request: str) -> List[VisualAssetRequirement]:
+    """Extract named car models from a rental / automotive brief.
+
+    Matches known luxury models (longest first) and bullet lines that look like
+    vehicle names so catalogue sites get one subject-labelled asset group each.
+    """
+    text = user_request or ""
+    lowered = _normalize_vehicle_label(text)
+    requirements: List[VisualAssetRequirement] = []
+    seen: set[str] = set()
+
+    for model in _KNOWN_VEHICLE_MODELS:
+        if model not in lowered:
+            continue
+        key = re.sub(r"[^a-z0-9]+", "_", model).strip("_")
+        if key in seen:
+            continue
+        seen.add(key)
+        display = _display_vehicle_name(model)
+        requirements.append(
+            VisualAssetRequirement(
+                key=key,
+                role="vehicles",
+                subject=display,
+                query=f"{display} car exterior studio photography",
+                identity_required=True,
+            )
+        )
+
+    # Also pick up bullet-list vehicle lines not in the curated catalogue.
+    for raw_line in text.splitlines():
+        line = re.sub(r"^[\s#>*+\-\d.)]+", "", raw_line).strip().strip("*_`")
+        if not line or len(line) > 60:
+            continue
+        normalized = _normalize_vehicle_label(line)
+        if not normalized or normalized in seen:
+            continue
+        # Require a known automotive brand token so we don't treat section headers
+        # as vehicles.
+        brands = (
+            "lamborghini", "ferrari", "porsche", "bmw", "mercedes", "audi",
+            "mclaren", "rolls", "bentley", "tesla", "range", "rover",
+            "chevrolet", "corvette", "aston", "bugatti", "nissan", "toyota",
+        )
+        if not any(brand in normalized for brand in brands):
+            continue
+        if normalized in _KNOWN_VEHICLE_MODELS:
+            continue
+        key = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        display = _display_vehicle_name(normalized)
+        requirements.append(
+            VisualAssetRequirement(
+                key=key,
+                role="vehicles",
+                subject=display,
+                query=f"{display} car exterior studio photography",
+                identity_required=True,
+            )
+        )
+
     return requirements[:16]
 
 
@@ -502,6 +695,21 @@ def _build_role_queries(domain: str, user_request: str, role: str) -> List[str]:
     wide_hints, subject_hints = _DOMAIN_QUERY_HINTS.get(
         domain, _DOMAIN_QUERY_HINTS["default"]
     )
+    if domain == "sports" and re.search(
+        r"\b(f1|formula\s*(?:1|one)|motorsport|grand prix)\b",
+        user_request or "",
+        re.IGNORECASE,
+    ):
+        wide_hints = [
+            "Formula 1 race track",
+            "Formula 1 starting grid",
+            "Grand Prix circuit",
+        ]
+        subject_hints = [
+            "Formula 1 driver portrait",
+            "F1 driver paddock portrait",
+            "Formula 1 driver",
+        ]
     hints = wide_hints if role in {"hero", "gallery"} else subject_hints
     queries: List[str] = []
     if topic:
@@ -647,18 +855,35 @@ class AssetResolutionService:
                 for item in _named_people_from_request(discovery_request)
                 if item.subject.lower() not in known_subjects
             )
-            existing_roles = {item.role for item in requirements}
+            known_subjects = {item.subject.lower() for item in requirements}
             requirements.extend(
-                item for item in default_requirements if item.role not in existing_roles
+                item
+                for item in _named_vehicles_from_request(discovery_request)
+                if item.subject.lower() not in known_subjects
+            )
+            existing_roles = {item.role for item in requirements}
+            # Named vehicles already cover the "vehicles" role — don't also add a
+            # generic vehicles bucket that would dilute subject-specific assets.
+            skip_roles = existing_roles | (
+                {"vehicles"} if any(item.role == "vehicles" for item in requirements) else set()
+            )
+            requirements.extend(
+                item for item in default_requirements if item.role not in skip_roles
             )
         else:
-            named_people = _named_people_from_request(discovery_request)
+            named_subjects = [
+                *_named_people_from_request(discovery_request),
+                *_named_vehicles_from_request(discovery_request),
+            ]
+            named_roles = {item.role for item in named_subjects}
+            if any(item.role == "vehicles" for item in named_subjects):
+                named_roles.add("vehicles")
             requirements = [
-                *named_people,
+                *named_subjects,
                 *(
                     item
                     for item in default_requirements
-                    if item.role not in {named.role for named in named_people}
+                    if item.role not in named_roles
                 ),
             ]
 
@@ -680,6 +905,7 @@ class AssetResolutionService:
                         client,
                         [
                             requirement.query,
+                            requirement.subject,
                             *_build_role_queries(
                                 domain,
                                 discovery_request,
@@ -743,29 +969,20 @@ class AssetResolutionService:
                 used_urls.update(extra)
                 assets[requirement.key].extend(extra)
 
-        # Reuse is safe only when semantic verification is disabled. A URL verified
-        # for one named person must never be silently assigned to another subject.
         pool = [url for urls in assets.values() for url in urls]
-        if pool and not verify_with_openai:
-            for role, urls in assets.items():
-                filled = list(urls)
-                cursor = 0
-                while len(filled) < self._per_role:
-                    filled.append(pool[cursor % len(pool)])
-                    cursor += 1
-                assets[role] = filled
-        elif not pool and not verify_with_openai:
+        if not pool and not verify_with_openai:
             return self._from_curated(
                 domain,
                 reason,
                 queries=queries,
                 providers=["curated-cdn"],
+                requirements=requirements,
             )
 
         # Stable unique provider list.
         providers = []
         if verify_with_openai and pool:
-            providers_used.append("openai-verification")
+            providers_used.append("vision-verification")
         for name in providers_used:
             if name not in providers:
                 providers.append(name)
@@ -810,10 +1027,13 @@ class AssetResolutionService:
 
         Returns more than ``per_role`` when available so cross-role dedupe has spares.
         """
-        # Named cards need one correct portrait, not eight candidates in the
-        # final manifest. Keeping this small lowers OpenAI vision latency/cost.
+        # Named cards need one correct portrait in the final manifest.
         target = 1 if requirement.identity_required else self._per_role
-        want = max(target, min(self._per_role + 1, 5))
+        # Search deeper for identities: the first Wikimedia results are often the
+        # named driver's car, while an actual cropped portrait appears later.
+        want = 8 if requirement.identity_required else max(
+            target, min(self._per_role + 1, 5)
+        )
         collected: List[str] = []
         for query in role_queries:
             candidates: List[ResolvedImage] = []
@@ -852,6 +1072,22 @@ class AssetResolutionService:
                         for term in identity_terms
                     )
                 ]
+                def _portrait_score(item: ResolvedImage) -> int:
+                    metadata = f"{item.title} {item.description}".lower()
+                    score = 0
+                    if any(term in metadata for term in ("portrait", "cropped", "headshot")):
+                        score += 6
+                    if metadata.startswith("file:" + requirement.subject.lower()):
+                        score += 3
+                    if any(
+                        term in metadata
+                        for term in (" fp1", " fp2", " fp3", "qualifying", "car of")
+                    ):
+                        score -= 5
+                    return score
+
+                candidates.sort(key=_portrait_score, reverse=True)
+                candidates = candidates[:4]
 
             seen_candidates: set[str] = set()
             fresh_candidates: List[ResolvedImage] = []
@@ -876,20 +1112,32 @@ class AssetResolutionService:
                     if ok is True
                 ]
             if semantic_verify:
-                approved = set(
-                    await self._image_verifier.verify_candidates(
-                        requirement,
-                        [
-                            ImageCandidate(
-                                url=item.url,
-                                provider=item.provider,
-                                title=item.title,
-                                description=item.description,
-                            )
-                            for item in fresh_candidates
-                        ],
+                image_candidates = [
+                    ImageCandidate(
+                        url=item.url,
+                        provider=item.provider,
+                        title=item.title,
+                        description=item.description,
                     )
-                )
+                    for item in fresh_candidates
+                ]
+                if requirement.identity_required:
+                    approved: set[str] = set()
+                    for candidate in image_candidates:
+                        matches = await self._image_verifier.verify_candidates(
+                            requirement,
+                            [candidate],
+                        )
+                        if matches:
+                            approved.update(matches)
+                            break
+                else:
+                    approved = set(
+                        await self._image_verifier.verify_candidates(
+                            requirement,
+                            image_candidates,
+                        )
+                    )
                 fresh_candidates = [
                     item for item in fresh_candidates if item.url in approved
                 ]
@@ -913,20 +1161,34 @@ class AssetResolutionService:
         """Top up a role with validated curated CDN URLs."""
         if missing <= 0:
             return []
+        subject_key = _normalize_vehicle_label(requirement.subject)
+        vehicle_pool = list(_CURATED_VEHICLE_IMAGES.get(subject_key, []))
+        # Prefer subject-matched vehicle URLs, then domain pool.
+        source_urls = vehicle_pool + list(_CURATED_CDN.get(domain, _CURATED_CDN["default"]))
         candidates: List[ResolvedImage] = []
-        for url in _CURATED_CDN.get(domain, _CURATED_CDN["default"]):
+        for url in source_urls:
             if url in exclude or any(item.url == url for item in candidates):
                 continue
             if self._validate and not await self._validate_image(client, url):
                 logger.info("Curated asset rejected (validation failed) url=%s", url)
                 continue
-            candidates.append(ResolvedImage(url=url, provider="curated-cdn"))
+            candidates.append(
+                ResolvedImage(
+                    url=url,
+                    provider="curated-cdn",
+                    title=requirement.subject,
+                )
+            )
         if semantic_verify:
             approved = set(
                 await self._image_verifier.verify_candidates(
                     requirement,
                     [
-                        ImageCandidate(url=item.url, provider=item.provider)
+                        ImageCandidate(
+                            url=item.url,
+                            provider=item.provider,
+                            title=item.title,
+                        )
                         for item in candidates
                     ],
                 )
@@ -944,23 +1206,59 @@ class AssetResolutionService:
         *,
         queries: List[str],
         providers: List[str],
+        requirements: Optional[List[VisualAssetRequirement]] = None,
     ) -> ImageDiscoveryResult:
         roles = _roles_for_domain(domain)
         pool = list(_CURATED_CDN.get(domain, _CURATED_CDN["default"]))
         assets: Dict[str, List[str]] = {}
+        asset_subjects: Dict[str, str] = {}
+        asset_roles: Dict[str, str] = {}
         idx = 0
+        used_urls: set[str] = set()
+
+        # When named vehicles are known, give each its own curated subject images.
+        for requirement in requirements or []:
+            if requirement.role != "vehicles" and not requirement.identity_required:
+                continue
+            subject_key = _normalize_vehicle_label(requirement.subject)
+            vehicle_urls = [
+                url
+                for url in _CURATED_VEHICLE_IMAGES.get(subject_key, [])
+                if url not in used_urls
+            ]
+            if not vehicle_urls:
+                continue
+            selected = vehicle_urls[: max(1, self._per_role)]
+            assets[requirement.key] = selected
+            used_urls.update(selected)
+            asset_subjects[requirement.key] = requirement.subject
+            asset_roles[requirement.key] = requirement.role
+
         for role in roles:
+            if role in assets or (role == "vehicles" and any(
+                asset_roles.get(key) == "vehicles" for key in assets
+            )):
+                continue
             bucket: List[str] = []
-            while len(bucket) < self._per_role:
-                bucket.append(pool[idx % len(pool)])
+            while len(bucket) < self._per_role and idx < len(pool):
+                url = pool[idx]
                 idx += 1
+                if url in used_urls:
+                    continue
+                bucket.append(url)
+                used_urls.add(url)
             assets[role] = bucket
+            asset_subjects[role] = role
+            asset_roles[role] = role
+
         return ImageDiscoveryResult(
             required=True,
             reason=reason,
             domain=domain,
             queries=queries,
             assets=assets,
+            asset_subjects=asset_subjects,
+            asset_roles=asset_roles,
             providers_used=providers,
         )
 

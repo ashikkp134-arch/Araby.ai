@@ -23,7 +23,7 @@ def test_website_build_routes_to_website_agent() -> None:
     decision = RequestRouter().classify("Build a SaaS landing page", "website")
     assert decision.tier == ModelTier.CODING
     assert decision.category == RequestCategory.WEBSITE_BUILDER
-    assert decision.max_tokens == 16384
+    assert decision.max_tokens == 128_000
 
 
 def test_website_followup_with_describe_still_builds() -> None:
@@ -37,5 +37,6 @@ def test_website_followup_with_describe_still_builds() -> None:
 
 
 def test_project_model_tier_defaults() -> None:
-    assert Settings.model_fields["openai_model_light"].default == "gpt-4o-mini"
-    assert Settings.model_fields["openai_model_coding"].default == "gpt-4o"
+    assert Settings.model_fields["openai_model_light"].default == "gpt-5.6-terra"
+    assert Settings.model_fields["openai_model_coding"].default == "gpt-5.6-sol"
+    assert Settings.model_fields["openai_coding_max_tokens"].default == 128_000

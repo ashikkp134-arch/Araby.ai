@@ -91,6 +91,24 @@ async def chat_stream(websocket: WebSocket, project_id: str) -> None:
                         await websocket.send_json({"type": "start", "metadata": event.metadata})
                     elif event.type == "delta":
                         await websocket.send_json({"type": "delta", "content": event.content})
+                    elif event.type == "preview_ready":
+                        await websocket.send_json(
+                            {
+                                "type": "preview_ready",
+                                "content": event.content,
+                                "file_changes": [c.model_dump() for c in event.file_changes],
+                                "metadata": event.metadata or {},
+                            }
+                        )
+                    elif event.type == "stage_done":
+                        await websocket.send_json(
+                            {
+                                "type": "stage_done",
+                                "content": event.content,
+                                "file_changes": [c.model_dump() for c in event.file_changes],
+                                "metadata": event.metadata or {},
+                            }
+                        )
                     elif event.type == "error":
                         await websocket.send_json({"type": "error", "message": event.content})
                     elif event.type == "done":

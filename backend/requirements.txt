@@ -21,3 +21,6 @@ opentelemetry-exporter-otlp>=1.29.0,<2
 opentelemetry-instrumentation-fastapi>=0.50b0
 openinference-instrumentation-openai>=0.1.41
 openinference-instrumentation>=0.1.44
+
+langgraph>=0.4,<1.1
+langchain-core>=0.3,<0.4

@@ -68,6 +68,18 @@ export async function undoLastAiChanges(projectId: string): Promise<UndoChangesR
 export interface StreamChatHandlers {
   onStart?: (metadata: Record<string, unknown>) => void;
   onDelta?: (chunk: string) => void;
+  /** Home page ready — open Live Preview immediately. */
+  onPreviewReady?: (payload: {
+    content: string;
+    file_changes: FileChangeProposal[];
+    metadata?: Record<string, unknown>;
+  }) => void;
+  /** Background Level-2 / Level-3 finished. */
+  onStageDone?: (payload: {
+    content: string;
+    file_changes: FileChangeProposal[];
+    metadata?: Record<string, unknown>;
+  }) => void;
   onDone?: (payload: {
     content: string;
     file_changes: FileChangeProposal[];
@@ -168,6 +180,18 @@ export function streamChatMessage(
         handlers.onStart?.(data.metadata || {});
       } else if (data.type === 'delta' && data.content) {
         handlers.onDelta?.(data.content);
+      } else if (data.type === 'preview_ready') {
+        handlers.onPreviewReady?.({
+          content: data.content || '',
+          file_changes: data.file_changes || [],
+          metadata: data.metadata,
+        });
+      } else if (data.type === 'stage_done') {
+        handlers.onStageDone?.({
+          content: data.content || '',
+          file_changes: data.file_changes || [],
+          metadata: data.metadata,
+        });
       } else if (data.type === 'done') {
         handlers.onDone?.({
           content: data.content || '',

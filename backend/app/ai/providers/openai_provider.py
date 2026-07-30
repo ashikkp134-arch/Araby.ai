@@ -12,6 +12,20 @@ from app.utils.exceptions import AppException
 logger = logging.getLogger(__name__)
 
 
+def _token_limit_kwargs(model: str, max_tokens: int) -> dict[str, int]:
+    """Return the token-limit parameter supported by the selected model."""
+    if model.lower().startswith(("gpt-5", "o1", "o3", "o4")):
+        return {"max_completion_tokens": max_tokens}
+    return {"max_tokens": max_tokens}
+
+
+def _temperature_kwargs(model: str, temperature: float) -> dict[str, float]:
+    """Omit custom temperature for reasoning models that only accept the default."""
+    if model.lower().startswith(("gpt-5", "o1", "o3", "o4")):
+        return {}
+    return {"temperature": temperature}
+
+
 def _is_placeholder_key(api_key: str) -> bool:
     """Return True when the key is clearly a template placeholder."""
     key = (api_key or "").strip()
@@ -85,14 +99,20 @@ def _raise_provider_error(exc: Exception) -> None:
 
 
 class OpenAIProvider(LLMProvider):
-    """OpenAI Chat Completions provider."""
+    """OpenAI-compatible Chat Completions provider."""
 
-    def __init__(self, api_key: str | None = None, model: str | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        base_url: str | None = None,
+    ) -> None:
         """Initialize the OpenAI provider.
 
         Args:
             api_key: Optional API key override.
             model: Optional model override.
+            base_url: Optional OpenAI-compatible API endpoint.
         """
         settings = get_settings()
         self._api_key = api_key or settings.openai_api_key
@@ -104,13 +124,13 @@ class OpenAIProvider(LLMProvider):
         # A present-but-empty OPENAI_BASE_URL environment variable is read by
         # some OpenAI SDK releases as an empty URL instead of the default host.
         # Always provide a valid endpoint explicitly.
-        base_url = (
-            (settings.openai_base_url or "").strip()
+        resolved_base_url = (
+            (base_url or settings.openai_base_url or "").strip()
             or "https://api.openai.com/v1"
         )
         self._client = AsyncOpenAI(
             api_key=self._api_key or "missing",
-            base_url=base_url,
+            base_url=resolved_base_url,
         )
 
     async def complete(
@@ -145,8 +165,8 @@ class OpenAIProvider(LLMProvider):
             response = await self._client.chat.completions.create(
                 model=use_model,
                 messages=[{"role": m.role, "content": m.content} for m in messages],
-                temperature=temperature,
-                max_tokens=max_tokens,
+                **_temperature_kwargs(use_model, temperature),
+                **_token_limit_kwargs(use_model, max_tokens),
             )
         except Exception as exc:
             logger.exception("OpenAI completion failed")
@@ -191,8 +211,8 @@ class OpenAIProvider(LLMProvider):
             stream = await self._client.chat.completions.create(
                 model=use_model,
                 messages=[{"role": m.role, "content": m.content} for m in messages],
-                temperature=temperature,
-                max_tokens=max_tokens,
+                **_temperature_kwargs(use_model, temperature),
+                **_token_limit_kwargs(use_model, max_tokens),
                 stream=True,
                 stream_options={"include_usage": True},
             )

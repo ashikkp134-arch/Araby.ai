@@ -1,4 +1,4 @@
-"""OpenAI-only semantic verification for discovered website images."""
+"""Semantic verification for discovered website images using a vision LLM."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ _GENERIC_PERSON_TERMS = frozenset(
 )
 
 
-def _is_usable_openai_key(api_key: str) -> bool:
+def _is_usable_api_key(api_key: str) -> bool:
     key = (api_key or "").strip()
     return bool(key) and not key.startswith("sk-your-")
 
@@ -93,7 +93,7 @@ class ImageCandidate:
 
 
 class OpenAIImageVerifier:
-    """Extract visual requirements and verify candidates with OpenAI vision only."""
+    """Extract visual requirements and verify candidates with a vision model."""
 
     def __init__(
         self,
@@ -104,21 +104,35 @@ class OpenAIImageVerifier:
         client: Any = None,
     ) -> None:
         settings = get_settings()
-        self._api_key = (api_key or settings.openai_api_key or "").strip()
+        base_url = str(
+            getattr(settings, "image_verification_base_url", "")
+            or "https://api.openai.com/v1"
+        ).strip()
+        provider_key = (
+            settings.xai_api_key
+            if "api.x.ai" in base_url
+            else settings.openai_api_key
+        )
+        self._api_key = (
+            api_key
+            or getattr(settings, "image_verification_api_key", "")
+            or provider_key
+            or ""
+        ).strip()
         self._model = (
             model
+            or str(getattr(settings, "image_verification_model", "") or "")
             or str(getattr(settings, "openai_image_verification_model", "") or "")
             or "gpt-4o-mini"
         ).strip()
         self._timeout = timeout_seconds
-        # Deliberately do not use OPENAI_BASE_URL: verification must be OpenAI-only.
         self._client = client or (
             AsyncOpenAI(
                 api_key=self._api_key,
-                base_url="https://api.openai.com/v1",
+                base_url=base_url,
                 timeout=self._timeout,
             )
-            if _is_usable_openai_key(self._api_key)
+            if _is_usable_api_key(self._api_key)
             else None
         )
 
@@ -273,10 +287,25 @@ class OpenAIImageVerifier:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "OpenAI image verification failed subject=%s: %s",
+                "Image verification failed subject=%s: %s",
                 requirement.subject,
                 exc,
             )
+            if len(candidates) > 1:
+                error_text = str(exc)
+                remaining = [
+                    candidate
+                    for candidate in candidates
+                    if candidate.url not in error_text
+                ]
+                if 0 < len(remaining) < len(candidates):
+                    return await self.verify_candidates(requirement, remaining)
+                approved: List[str] = []
+                for candidate in candidates:
+                    approved.extend(
+                        await self.verify_candidates(requirement, [candidate])
+                    )
+                return list(dict.fromkeys(approved))
             return []
 
         payload = _json_object(response.choices[0].message.content or "")

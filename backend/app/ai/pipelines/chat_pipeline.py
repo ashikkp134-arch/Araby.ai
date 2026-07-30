@@ -49,6 +49,13 @@ from app.utils.workspace_file_policy import edit_restriction_message
 logger = logging.getLogger(__name__)
 tracer = get_tracer("app.ai.pipeline")
 
+# Lazy import to keep module import light when agentic builder is disabled.
+def _get_website_builder_runner():
+    from app.ai.agents.website_builder import WebsiteBuilderRunner
+
+    return WebsiteBuilderRunner
+
+
 
 @dataclass
 class PreparedTurn:
@@ -291,6 +298,30 @@ class AIPipeline:
                     if prepared.input_guard:
                         set_span_attrs(span, prepared.input_guard.to_metadata("input"))
 
+                    if self._should_use_agentic_website_builder(prepared):
+                        done: Optional[StreamEvent] = None
+                        async for event in self._stream_agentic_website(prepared):
+                            if event.type == "done":
+                                done = event
+                            elif event.type == "error":
+                                raise AppException(
+                                    event.content or "Website builder failed",
+                                    status_code=502,
+                                    error_code="agentic_website_failed",
+                                )
+                        if done is None or not done.assistant_message:
+                            raise AppException(
+                                "Website builder produced no result",
+                                status_code=502,
+                                error_code="agentic_website_empty",
+                            )
+                        return ChatCompletionResponse(
+                            user_message=ChatMessageResponse(**prepared.user_message),
+                            assistant_message=ChatMessageResponse(**done.assistant_message),
+                            applied_changes=done.file_changes,
+                            metadata=done.metadata or {"agentic": True},
+                        )
+
                     started = time.perf_counter()
                     with tracer.start_as_current_span("ai.llm.complete") as llm_span:
                         llm_response = await self._provider.complete(
@@ -427,6 +458,11 @@ class AIPipeline:
             )
             if prepared.input_guard:
                 set_span_attrs(span, prepared.input_guard.to_metadata("input"))
+
+            if self._should_use_agentic_website_builder(prepared):
+                async for event in self._stream_agentic_website(prepared):
+                    yield event
+                return
 
             yield StreamEvent(
                 type="start",
@@ -884,6 +920,135 @@ class AIPipeline:
                 applied_changes=applied,
                 metadata=metadata,
             )
+
+    def _should_use_agentic_website_builder(self, prepared: PreparedTurn) -> bool:
+        """Whether this turn should use the LangGraph multi-agent website builder.
+
+        Agentic mode is for substantial website builds (avoids single-response
+        truncation). Lightweight Q&A and tiny edits stay on the single-shot path.
+        """
+        settings = get_settings()
+        if not bool(getattr(settings, "website_agentic_enabled", True)):
+            return False
+        workspace = str(prepared.project.get("workspace_type") or "").lower()
+        if workspace != "website" and prepared.routing.category != RequestCategory.WEBSITE_BUILDER:
+            return False
+        if prepared.routing.tier.value == "light":
+            return False
+        text = ""
+        # Prefer the sanitized content from the persisted user message.
+        if prepared.user_message:
+            text = str(prepared.user_message.get("content") or "")
+        text_l = text.lower()
+        build_hit = any(
+            token in text_l
+            for token in (
+                "build",
+                "create",
+                "generate",
+                "make",
+                "scaffold",
+                "landing",
+                "website",
+                "premium",
+                "production-quality",
+                "production quality",
+            )
+        )
+        path_count = len(prepared.context.all_paths or [])
+        if build_hit or len(text) > 350 or path_count < 6:
+            return True
+        return prepared.routing.category == RequestCategory.WEBSITE_BUILDER
+
+    async def _stream_agentic_website(
+        self,
+        prepared: PreparedTurn,
+    ) -> AsyncIterator[StreamEvent]:
+        """Run the LangGraph website builder and persist the final assistant turn."""
+        settings = get_settings()
+        runner_cls = _get_website_builder_runner()
+        runner = runner_cls(
+            provider=self._provider,
+            file_modifier=self._modifier,
+            file_repo=self._files,
+            image_resolver=self._image_resolver,
+        )
+        existing_paths = list(prepared.context.all_paths or [])
+        collected_deltas: List[str] = []
+        done_event: Optional[StreamEvent] = None
+        started = time.perf_counter()
+
+        async for event in runner.run_stream(
+            project_id=prepared.project_id,
+            user_request=str(prepared.user_message.get("content") or ""),
+            project_name=str(prepared.project.get("name") or ""),
+            workspace_type=str(prepared.project.get("workspace_type") or "website"),
+            existing_paths=existing_paths,
+            coding_model=prepared.routing.model,
+            light_model=settings.openai_model_light or prepared.routing.model,
+        ):
+            if event.type == "delta" and event.content:
+                collected_deltas.append(event.content)
+                yield event
+            elif event.type in {"preview_ready", "stage_done"}:
+                # Forward mid-build UI signals so the frontend can open Live Preview
+                # after Home and notify when background L2/L3 finish.
+                yield event
+            elif event.type == "start":
+                yield StreamEvent(
+                    type="start",
+                    metadata={
+                        "model": prepared.routing.model,
+                        "category": prepared.routing.category.value,
+                        "tier": prepared.routing.tier.value,
+                        "agentic": True,
+                        "builder": "langgraph_website",
+                        **(event.metadata or {}),
+                    },
+                )
+            elif event.type == "error":
+                yield event
+                return
+            elif event.type == "done":
+                done_event = event
+
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        content = (done_event.content if done_event else "") or "".join(collected_deltas[-5:])
+        if not content.strip():
+            content = "Agentic website build completed."
+        applied = list(done_event.file_changes if done_event else [])
+        # Reverse changes aren't tracked across multi-stage applies yet; undo
+        # still works for the latest single-shot turns. Store empty reverse set.
+        assistant_message = await self._chat.add_message(
+            session_id=prepared.session_oid,
+            project_id=parse_object_id(prepared.project_id, "project_id"),
+            role="assistant",
+            content=content,
+            token_count=None,
+            model=prepared.routing.model,
+            latency_ms=latency_ms,
+            file_changes=[change.model_dump() for change in applied],
+            reverse_changes=[],
+        )
+        metadata = {
+            "prompt_version": self._prompt_builder.PROMPT_VERSION,
+            "agentic": True,
+            "builder": "langgraph_website",
+            "model": prepared.routing.model,
+            "latency_ms": latency_ms,
+            "category": prepared.routing.category.value,
+            "tier": prepared.routing.tier.value,
+            "file_changes.applied": len(applied),
+            **(done_event.metadata if done_event else {}),
+        }
+        yield StreamEvent(
+            type="done",
+            content=content,
+            file_changes=applied,
+            metadata=metadata,
+            assistant_message=ChatMessageResponse(**assistant_message).model_dump(mode="json"),
+            user_message=ChatMessageResponse(**prepared.user_message).model_dump(mode="json"),
+        )
 
     def _should_check_preview_integrity(self, prepared: PreparedTurn) -> bool:
         """Whether this turn should run Live Preview import integrity checks."""

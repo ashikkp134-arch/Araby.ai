@@ -102,8 +102,12 @@ class RequestRouter:
         text = (user_request or "").strip().lower()
         workspace = (workspace_type or "javascript").lower().strip()
         settings = get_settings()
-        light_model = (settings.openai_model_light or settings.openai_model).strip()
-        coding_model = (settings.openai_model_coding or settings.openai_model).strip()
+        if settings.llm_provider.lower().strip() == "xai":
+            light_model = settings.xai_model_light.strip()
+            coding_model = settings.xai_model_coding.strip()
+        else:
+            light_model = (settings.openai_model_light or settings.openai_model).strip()
+            coding_model = (settings.openai_model_coding or settings.openai_model).strip()
 
         light_hit = any(re.search(p, text) for p in _LIGHT_PATTERNS)
         coding_hit = any(re.search(p, text) for p in _CODING_PATTERNS)
@@ -127,7 +131,7 @@ class RequestRouter:
                 tier=ModelTier.CODING,
                 model=coding_model,
                 temperature=0.3,
-                max_tokens=16384,
+                max_tokens=settings.openai_coding_max_tokens,
                 reason="website generation / edit",
             )
 
@@ -196,6 +200,10 @@ class ModelRouter:
             Model identifier string.
         """
         settings = get_settings()
+        if settings.llm_provider.lower().strip() == "xai":
+            if tier == ModelTier.LIGHT:
+                return settings.xai_model_light.strip()
+            return settings.xai_model_coding.strip()
         if tier == ModelTier.LIGHT:
             return (settings.openai_model_light or settings.openai_model).strip()
         return (settings.openai_model_coding or settings.openai_model).strip()
