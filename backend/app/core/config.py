@@ -20,6 +20,10 @@ class Settings(BaseSettings):
         openai_model: Default OpenAI model identifier (fallback for both tiers).
         openai_model_light: Fast/cheap model for explanations and docs.
         openai_model_coding: Stronger model for generation and multi-file edits.
+        openai_coding_max_tokens: Maximum output-token budget for coding requests.
+        xai_api_key: xAI API key used by the Grok provider.
+        xai_model_light: Fast Grok model for planning and lightweight tasks.
+        xai_model_coding: Grok model used for website/code generation.
         openai_base_url: Optional OpenAI-compatible API base URL (empty = OpenAI).
         llm_provider: Active LLM provider name.
         access_token_expire: Access token lifetime in minutes.
@@ -45,9 +49,19 @@ class Settings(BaseSettings):
     jwt_secret: str = Field(..., alias="JWT_SECRET")
     jwt_refresh_secret: str = Field(..., alias="JWT_REFRESH_SECRET")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
-    openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
-    openai_model_light: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL_LIGHT")
-    openai_model_coding: str = Field(default="gpt-4o", alias="OPENAI_MODEL_CODING")
+    openai_model: str = Field(default="gpt-5.6-terra", alias="OPENAI_MODEL")
+    openai_model_light: str = Field(default="gpt-5.6-terra", alias="OPENAI_MODEL_LIGHT")
+    openai_model_coding: str = Field(default="gpt-5.6-sol", alias="OPENAI_MODEL_CODING")
+    openai_coding_max_tokens: int = Field(
+        default=128_000,
+        ge=1,
+        le=128_000,
+        alias="OPENAI_CODING_MAX_TOKENS",
+    )
+    xai_api_key: str = Field(default="", alias="XAI_API_KEY")
+    xai_model_light: str = Field(default="grok-4.3", alias="XAI_MODEL_LIGHT")
+    xai_model_coding: str = Field(default="grok-4.5", alias="XAI_MODEL_CODING")
+    xai_base_url: str = Field(default="https://api.x.ai/v1", alias="XAI_BASE_URL")
     # Optional OpenAI-compatible base URL (e.g. https://api.x.ai/v1 for Grok).
     # Leave empty to use the default OpenAI endpoint.
     openai_base_url: str = Field(default="", alias="OPENAI_BASE_URL")
@@ -96,8 +110,26 @@ class Settings(BaseSettings):
         default="gpt-4o-mini",
         alias="OPENAI_IMAGE_VERIFICATION_MODEL",
     )
+    image_verification_api_key: str = Field(default="", alias="IMAGE_VERIFICATION_API_KEY")
+    image_verification_model: str = Field(
+        default="gpt-4o-mini",
+        alias="IMAGE_VERIFICATION_MODEL",
+    )
+    image_verification_base_url: str = Field(
+        default="https://api.openai.com/v1",
+        alias="IMAGE_VERIFICATION_BASE_URL",
+    )
     unsplash_access_key: str = Field(default="", alias="UNSPLASH_ACCESS_KEY")
     pexels_api_key: str = Field(default="", alias="PEXELS_API_KEY")
+
+    # Agentic Website Builder (LangGraph multi-stage generation).
+    website_agentic_enabled: bool = Field(default=True, alias="WEBSITE_AGENTIC_ENABLED")
+    website_agentic_max_repair: int = Field(default=2, alias="WEBSITE_AGENTIC_MAX_REPAIR")
+    website_agentic_github_search: bool = Field(
+        default=True,
+        alias="WEBSITE_AGENTIC_GITHUB_SEARCH",
+    )
+    github_token: str = Field(default="", alias="GITHUB_TOKEN")
 
     @field_validator("jwt_secret", "jwt_refresh_secret")
     @classmethod

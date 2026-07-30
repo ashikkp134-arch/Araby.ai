@@ -26,6 +26,12 @@ def get_llm_provider(provider_name: str | None = None) -> LLMProvider:
     """
     settings = get_settings()
     name = (provider_name or settings.llm_provider).lower().strip()
+    if name == "xai":
+        return OpenAIProvider(
+            api_key=settings.xai_api_key,
+            model=settings.xai_model_coding,
+            base_url=settings.xai_base_url,
+        )
     mapping = {
         "openai": OpenAIProvider,
         "anthropic": AnthropicProvider,

@@ -215,6 +215,29 @@ def find_asset_usage_issues(
                 ),
             )
         )
+    supplied_urls = {
+        str(url)
+        for urls in assets.values()
+        for url in urls
+        if str(url).startswith("https://")
+    }
+    duplicated_urls = sorted(
+        url for url in supplied_urls if generated_source.count(url) > 1
+    )
+    if duplicated_urls:
+        issues.append(
+            IntegrityIssue(
+                importer="generated website",
+                specifier="duplicate image URL",
+                tried=tuple(duplicated_urls[:6]),
+                kind="asset_usage",
+                detail=(
+                    "Home-page source reuses supplied image URLs. Assign every visible "
+                    "card, person, section, and background a unique image URL: "
+                    + ", ".join(duplicated_urls[:6])
+                ),
+            )
+        )
     for key, urls in assets.items():
         valid_urls = [str(url) for url in urls if str(url).startswith("https://")]
         if not valid_urls or any(url in generated_source for url in valid_urls):
@@ -274,6 +297,8 @@ def build_repair_prompt(
             "",
             "Return ```file path=... action=create|update``` blocks for every fix.",
             "Keep MemoryRouter for React Router. Keep one coherent React entry.",
+            "Include a path=\"*\" catch-all that redirects Home — never leave React",
+            "Router's default \"Unexpected Application Error! 404 Not Found\" UI.",
         ]
     )
     return "\n".join(lines)

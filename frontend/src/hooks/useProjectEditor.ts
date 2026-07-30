@@ -86,6 +86,7 @@ export function useProjectEditor(projectId: string) {
   const [undoPending, setUndoPending] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [optimisticMessages, setOptimisticMessages] = useState<ChatMessage[]>([]);
+  const [buildNotice, setBuildNotice] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ActiveView>('editor');
   const [previewTab, setPreviewTab] = useState<PreviewTabState>({
     open: false,
@@ -461,6 +462,41 @@ export function useProjectEditor(projectId: string) {
         onDelta: (chunk) => {
           setStreamingContent((prev) => prev + chunk);
         },
+        onPreviewReady: () => {
+          // Home-first agentic flow: refresh files and open Live Preview now
+          // while Level-2 / Level-3 continue in the background.
+          setBuildNotice(
+            'Home page ready — Live Preview opened. Building Level-2 and Level-3 in the background…',
+          );
+          void (async () => {
+            try {
+              await refreshWorkspaceState();
+              const files = await fetchAllFiles();
+              setPreviewTab({ open: true, files, loading: false });
+              setActiveView('preview');
+            } catch (err) {
+              setError(getErrorMessage(err));
+            }
+          })();
+        },
+        onStageDone: (payload) => {
+          const notice =
+            payload.content ||
+            'Background Level-2 and Level-3 pages finished. Refresh Live Preview to browse them.';
+          setBuildNotice(notice);
+          setStreamingContent((prev) => `${prev}\n🔔 ${notice}\n`);
+          void (async () => {
+            try {
+              await refreshWorkspaceState();
+              const files = await fetchAllFiles();
+              setPreviewTab((prev) =>
+                prev.open ? { open: true, files, loading: false } : prev,
+              );
+            } catch {
+              // Non-fatal — notice already shown.
+            }
+          })();
+        },
         onDone: () => {
           setStreamingContent('');
         },
@@ -642,6 +678,8 @@ export function useProjectEditor(projectId: string) {
     previewRepairing,
     undoPending,
     streamingContent,
+    buildNotice,
+    clearBuildNotice: () => setBuildNotice(null),
     lastChangeSet,
     canUndo,
     previewTab,

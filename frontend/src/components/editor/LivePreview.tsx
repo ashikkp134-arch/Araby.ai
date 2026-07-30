@@ -178,6 +178,11 @@ export function LivePreview({
         return;
       }
       const message = String(data.message || 'Preview runtime error');
+      // React Router's default error UI ("Unexpected Application Error! 404 Not Found")
+      // is a recoverable routing miss — never surface it in the Araby UI.
+      if (isBenignRouterError(message)) {
+        return;
+      }
       // Swap to a blank loading shell; parent shows the motion buffer while repairing.
       setDocumentHtml(buildPreviewLoadingDocument());
       setStatus('Repairing preview…');
@@ -197,6 +202,11 @@ export function LivePreview({
   // remains, show the actual diagnostic instead of leaving a permanent black pane.
   useEffect(() => {
     if (!repairing && lastError && status === 'Repairing preview…') {
+      if (isBenignRouterError(lastError.message)) {
+        setLastError(undefined);
+        setStatus('Live Preview');
+        return;
+      }
       setDocumentHtml(buildPreviewErrorDocument(lastError));
       setStatus('Preview error');
     }
@@ -253,6 +263,18 @@ export function LivePreview({
 function extractMissingModule(message: string): string | undefined {
   const match = message.match(/Missing module\s+"([^"]+)"/i);
   return match?.[1];
+}
+
+/**
+ * React Router's default error boundary text. These are routing misses inside
+ * the generated site, not Araby compile failures — hide them from the UI.
+ */
+function isBenignRouterError(message: string): boolean {
+  return (
+    /Unexpected Application Error/i.test(message) ||
+    (/404\s*Not Found/i.test(message) && /router|route|application error/i.test(message)) ||
+    /^404\s*Not Found$/i.test(message.trim())
+  );
 }
 
 /**
@@ -546,12 +568,36 @@ window.addEventListener('error', function (event) {
 window.addEventListener('unhandledrejection', function (event) {
   showPreviewCrash(event.reason);
 });
+function isBenignRouterErrorText(text) {
+  var message = String(text || '');
+  return /Unexpected Application Error/i.test(message) ||
+    (/404\\s*Not Found/i.test(message) && /router|route|application error/i.test(message)) ||
+    /^404\\s*Not Found$/i.test(message.trim());
+}
+function scrubRouterDefaultError() {
+  var root = document.getElementById('root');
+  if (!root) return;
+  var text = root.textContent || '';
+  if (!isBenignRouterErrorText(text)) return;
+  // Soft recover: blank the React Router default 404 UI; do not alarm the parent shell.
+  root.innerHTML = '<div style="min-height:100vh;margin:0;background:#0B1F3A" aria-hidden="true"></div>';
+}
+try {
+  var _arabyObs = new MutationObserver(function () { scrubRouterDefaultError(); });
+  _arabyObs.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  document.addEventListener('DOMContentLoaded', scrubRouterDefaultError);
+  setInterval(scrubRouterDefaultError, 800);
+} catch (e) {}
 function showPreviewCrash(reason) {
   var message = '';
   if (reason && typeof reason === 'object') {
     message = (reason.message ? String(reason.message) + '\\n\\n' : '') + (reason.stack || '');
   } else {
     message = String(reason || 'Unknown runtime error');
+  }
+  if (isBenignRouterErrorText(message)) {
+    scrubRouterDefaultError();
+    return;
   }
   try {
     parent.postMessage(

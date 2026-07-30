@@ -74,6 +74,19 @@ export function EditorPage() {
         <p className="shrink-0 bg-rose-500/10 px-4 py-2 text-sm text-rose-300">{editor.error}</p>
       ) : null}
 
+      {editor.buildNotice ? (
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-accent/30 bg-accent/10 px-4 py-2 text-sm text-sand-50">
+          <p className="min-w-0 flex-1">{editor.buildNotice}</p>
+          <button
+            type="button"
+            className="shrink-0 text-xs text-accent hover:underline"
+            onClick={editor.clearBuildNotice}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[240px_minmax(0,1fr)_minmax(280px,340px)]">
         <FileExplorer
           nodes={editor.treeQuery.data || []}

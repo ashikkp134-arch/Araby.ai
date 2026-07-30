@@ -14,6 +14,7 @@ from app.ai.pipelines.image_discovery import (
     ResolvedImage,
     _build_role_queries,
     _named_people_from_request,
+    _named_vehicles_from_request,
     _relevance_terms,
     images_required,
 )
@@ -52,8 +53,40 @@ def test_images_required_for_explicit_and_domain_requests() -> None:
     assert required is True
     assert domain == "restaurant"
 
+    required, reason, domain = images_required(
+        "Build a Premium Car Rental Website with real car images"
+    )
+    assert required is True
+    assert domain == "cars"
+
     required, reason, domain = images_required("Make a wireframe text-only layout")
     assert required is False
+
+
+def test_named_vehicles_extracted_from_car_rental_brief() -> None:
+    prompt = """
+    Include at least 12 vehicles:
+    * Lamborghini Huracán
+    * Ferrari 296 GTB
+    * Porsche 911 Turbo S
+    * BMW M4 Competition
+    * Mercedes-Benz G-Class
+    * Audi RS7
+    * McLaren 720S
+    * Rolls-Royce Ghost
+    * Bentley Continental GT
+    * Tesla Model S Plaid
+    * Range Rover Sport
+    * Chevrolet Corvette C8
+    """
+    vehicles = _named_vehicles_from_request(prompt)
+    subjects = {item.subject.lower() for item in vehicles}
+    assert len(vehicles) >= 10
+    assert any("lamborghini" in s for s in subjects)
+    assert any("ferrari" in s for s in subjects)
+    assert any("porsche" in s for s in subjects)
+    assert all(item.role == "vehicles" for item in vehicles)
+    assert all(item.identity_required for item in vehicles)
 
 
 def test_asset_role_words_do_not_hijack_domain() -> None:
@@ -66,6 +99,24 @@ def test_asset_role_words_do_not_hijack_domain() -> None:
         required, _, domain = images_required(prompt)
         assert required is True
         assert domain == "sports", f"{prompt!r} resolved to {domain!r}"
+
+
+def test_f1_people_use_driver_search_context() -> None:
+    prompt = """Build an F1 driver website with images:
+    Max Verstappen
+    Lewis Hamilton
+    George Russell
+    """
+    required, _, domain = images_required(prompt)
+    people = _named_people_from_request(prompt)
+    assert required is True
+    assert domain == "sports"
+    assert {item.subject for item in people} == {
+        "Max Verstappen",
+        "Lewis Hamilton",
+        "George Russell",
+    }
+    assert all("Formula 1 driver portrait" in item.query for item in people)
 
 
 def test_domain_keywords_match_whole_words_only() -> None:
@@ -173,8 +224,8 @@ def test_curated_fallback_used_when_search_empty() -> None:
     assert "curated-cdn" in result.providers_used
 
 
-def test_every_role_is_filled_and_deduped_per_role() -> None:
-    """No role may be short — a short role means an empty section in the preview."""
+def test_curated_assets_are_unique_across_all_roles() -> None:
+    """A Home page must never receive the same fallback image twice."""
     service = AssetResolutionService(
         validate=False,
         per_role=3,
@@ -190,9 +241,9 @@ def test_every_role_is_filled_and_deduped_per_role() -> None:
     ), patch.object(service, "_search_wikimedia", new=_empty):
         result = asyncio.run(service.resolve("Build a football website with images"))
     assert result.assets
-    for role, urls in result.assets.items():
-        assert len(urls) == 3, f"role {role} only had {len(urls)} urls"
-        assert len(set(urls)) >= 1
+    urls = [url for role_urls in result.assets.values() for url in role_urls]
+    assert urls
+    assert len(urls) == len(set(urls))
 
 
 def test_search_budget_timeout_falls_back_to_curated() -> None:
@@ -233,7 +284,7 @@ def test_prompt_section_maps_roles_to_sections() -> None:
     section = result.to_prompt_section()
     assert "usage=full-width hero / banner background" in section
     assert "usage=player cards and profile portraits" in section
-    assert "onerror fallback" in section
+    assert "only ONE visible Home-page element" in section
 
 
 def test_openai_semantic_verifier_rejects_wrong_named_person() -> None:
