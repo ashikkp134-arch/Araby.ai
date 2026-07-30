@@ -81,7 +81,7 @@ This starts **MongoDB + Redis + Phoenix (traces) + FastAPI backend + nginx front
 
 - App: [http://localhost](http://localhost)/3000/
 - API health: [http://localhost/health](http://localhost/health)
-- Phoenix traces: [http://localhost:6006](http://localhost:6006)
+- Phoenix traces: [https://app.phoenix.arize.com/s/AI-Coding-Workspace]
 
 ### Useful commands
 
