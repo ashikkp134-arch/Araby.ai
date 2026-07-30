@@ -192,8 +192,8 @@ Authentication uses JWT access tokens (in-memory on the client) plus HTTP-only r
 - Monaco editor with tabs, autosave, and manual save
 - Project-scoped AI chat with context-aware file edits
 - Website Builder live preview (HTML/CSS/JS + Tailwind CDN)
-- Provider abstraction for OpenAI (Anthropic/Gemini/Ollama/Azure stubs)
-- Isolated evaluation harness scaffolding (RAGAS/DeepEval-ready)
+- Provider abstraction for OpenAI 
+- Isolated evaluation harness scaffolding 
 
 ## Security notes
 
